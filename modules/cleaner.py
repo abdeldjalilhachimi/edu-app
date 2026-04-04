@@ -200,17 +200,19 @@ def _normalize_numcpt(series: pd.Series) -> pd.Series:
 
 def build_composite_key(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add a '_KEY' column formed by concatenating NOM, PRENOM, and NUMCPT.
+    Add a '_KEY' column based on NUMCPT alone.
 
-    Used only for duplicate detection; dropped before export.
-    Values are normalized: stripped of whitespace, uppercased for NOM/PRENOM,
-    and NUMCPT has leading zeros removed so that text and integer
-    representations match (e.g. '007999...' == 7999...).
+    NUMCPT is 100% unique across employees, so NOM/PRENOM are not needed
+    in the key. This avoids false negatives caused by name typos or
+    encoding differences between files.
+
+    NUMCPT is normalized: stripped of whitespace and leading zeros so that
+    text ('007999...') and integer (7999...) representations match.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Must have NOM, PRENOM, NUMCPT columns (validated upstream).
+        Must have NUMCPT column (validated upstream).
 
     Returns
     -------
@@ -218,13 +220,7 @@ def build_composite_key(df: pd.DataFrame) -> pd.DataFrame:
         Copy of df with an added '_KEY' column.
     """
     result_df = df.copy()
-    result_df[KEY_COLUMN] = (
-        result_df["NOM"].astype(str).str.strip().str.upper()
-        + "|"
-        + result_df["PRENOM"].astype(str).str.strip().str.upper()
-        + "|"
-        + _normalize_numcpt(result_df["NUMCPT"])
-    )
+    result_df[KEY_COLUMN] = _normalize_numcpt(result_df["NUMCPT"])
     return result_df
 
 

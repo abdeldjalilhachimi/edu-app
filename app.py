@@ -38,7 +38,7 @@ if "processing_info" not in st.session_state:
 # Header
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.title("📊 Excel Multi-File Processor")
+
 st.markdown(
     "Traitez un fichier principal et plusieurs fichiers additionnels Excel. "
     "Pour chaque employé (NOM/PRENOM/NUMCPT) trouvé dans les fichiers additionnels, "
@@ -83,16 +83,29 @@ with col2:
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Options
+# ─────────────────────────────────────────────────────────────────────────────
+
+include_internal = st.checkbox(
+    "📑 Inclure les feuilles internes comme données additionnelles",
+    value=False,
+    help="Si coché, les feuilles supplémentaires dans chaque fichier (ex: RAP1, RAP2...) "
+         "seront automatiquement traitées comme des fichiers additionnels."
+)
+
+st.divider()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Process button
 # ─────────────────────────────────────────────────────────────────────────────
 
-files_ready = main_file is not None and bool(additional_files)
+files_ready = main_file is not None and (bool(additional_files) or include_internal)
 
 if not files_ready:
     missing = []
     if main_file is None:
         missing.append("fichier principal")
-    if not additional_files:
+    if not additional_files and not include_internal:
         missing.append("fichier(s) additionnel(s)")
     st.info(f"ℹ️ Veuillez téléverser le(s) {' et le(s) '.join(missing)} pour continuer.")
 
@@ -114,17 +127,19 @@ if process_clicked and files_ready:
     st.session_state["processing_info"] = None
 
     main_filename = main_file.name
-    additional_filenames = [f.name for f in additional_files]
+    add_files = additional_files if additional_files else []
+    add_filenames = [f.name for f in add_files]
 
     try:
         with st.spinner("Validation et traitement en cours…"):
 
-            # Step 1 — Validate all files
-            main_df, additional_dfs, dropped_counts = validate_all_files(
+            # Step 1 — Validate all files (+ internal sheets if enabled)
+            main_df, additional_dfs, additional_names, dropped_counts = validate_all_files(
                 main_file=main_file,
                 main_filename=main_filename,
-                additional_files=additional_files,
-                additional_filenames=additional_filenames,
+                additional_files=add_files,
+                additional_filenames=add_filenames,
+                include_internal_sheets=include_internal,
             )
 
             # Step 2 — Clean and normalize BRUTSS; build composite keys
@@ -132,7 +147,7 @@ if process_clicked and files_ready:
                 main_df=main_df,
                 additional_dfs=additional_dfs,
                 main_filename=main_filename,
-                additional_filenames=additional_filenames,
+                additional_filenames=additional_names,
             )
 
             # Step 3 — Key-based merge: match rows + update BRUTSS
@@ -152,8 +167,9 @@ if process_clicked and files_ready:
         st.session_state["result_bytes"] = output_bytes
         st.session_state["processing_info"] = {
             "main_rows": result.stats["total"],
-            "additional_count": len(additional_files),
+            "additional_count": len(additional_dfs),
             "duplicate_count": result.stats["duplicate_count"],
+            "added_count": result.stats["added_count"],
             "brutss_total": result.stats["brutss_total"],
             "dropped_counts": dropped_counts,
         }
@@ -195,14 +211,17 @@ if st.session_state["result_bytes"]:
         )
 
     # Processing summary metrics
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
     with col_a:
         st.metric("Total BRUTSS final", f"{info['brutss_total']:,.2f}".replace(",", " ").replace(".", ","))
     with col_b:
-        st.metric("Lignes dans le fichier principal", info["main_rows"])
+        st.metric("Lignes dans le résultat", info["main_rows"])
     with col_c:
         dup_label = f"{info['duplicate_count']}" if info["duplicate_count"] else "Aucune"
         st.metric("Correspondances trouvées", dup_label)
+    with col_d:
+        added_label = f"{info['added_count']}" if info.get("added_count") else "Aucune"
+        st.metric("Nouvelles lignes ajoutées", added_label)
 
     st.download_button(
         label="⬇  Télécharger le résultat (output.xlsx)",
@@ -222,3 +241,5 @@ st.caption(
     "Colonnes requises dans chaque fichier : **BRUTSS**, **NOM**, **PRENOM**, **NUMCPT**  |  "
     "Formats numériques supportés : `1 234,56` · `1,234.56` · `1.234,56` · `1234.56`"
 )
+
+st.title("🧑🏻‍💻 Create by Abdeldjalil Hachimi ")

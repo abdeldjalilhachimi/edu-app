@@ -1,19 +1,14 @@
 """
 exporter.py
 
-Build the output Excel workbook with two sheets using pure openpyxl.
+Build the output Excel workbook with two sheets.
 
 Sheet 1 ("Résultat"): Main file data with updated BRUTSS values.
-Sheet 2 ("Résumé"):   Per-file totals, grand total, duplicate list.
+Sheet 2 ("Résumé"):   Matches table + stats summary.
 
-Number formatting is applied via openpyxl cell.number_format so that
-BRUTSS values remain numeric in Excel (sortable, usable in formulas)
-while displaying in French format: 1 234,56.
-
-French Excel number format code: '# ##0,00'
-  Space = thousands separator
-  Comma = decimal separator
-  Always 2 decimal places
+Strategy: use pandas ExcelWriter to write data (handles all type conversions
+safely), then open with openpyxl to apply French number formatting and styling.
+This avoids the "We found a problem with some content" Excel repair warning.
 """
 
 import io
@@ -39,58 +34,29 @@ BRUTSS_COLUMN = "BRUTSS"
 
 
 def _auto_column_widths(ws) -> None:
-    """Set each column width to fit the widest cell value (with a cap)."""
-    for col_cells in ws.columns:
-        max_length = 0
-        col_letter = get_column_letter(col_cells[0].column)
+    """Set each column width based on header length (fast, avoids scanning all rows)."""
+    for col_cells in ws.iter_cols(min_row=1, max_row=1):
         for cell in col_cells:
-            if cell.value is not None:
-                max_length = max(max_length, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
+            col_letter = get_column_letter(cell.column)
+            header_len = len(str(cell.value)) if cell.value else 8
+            ws.column_dimensions[col_letter].width = min(header_len + 6, 50)
 
 
-def build_result_sheet(ws, df: pd.DataFrame) -> None:
-    """
-    Write the updated main DataFrame to an openpyxl worksheet.
-
-    - Excludes the _KEY column (internal use only).
-    - Applies FRENCH_NUMBER_FORMAT to every BRUTSS cell.
-    - Values are stored as Python float (numeric in Excel, not text).
-    - Header row is bold white on blue background.
-
-    Parameters
-    ----------
-    ws : openpyxl Worksheet
-    df : pd.DataFrame
-        Main DataFrame with updated BRUTSS (float64) and _KEY column.
-    """
-    # Columns to export (drop internal _KEY)
-    export_cols = [c for c in df.columns if c != KEY_COLUMN]
-    brutss_col_idx = export_cols.index(BRUTSS_COLUMN) + 1  # 1-based
-
-    # Write header row
-    for col_idx, col_name in enumerate(export_cols, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
+def _style_header_row(ws, max_col: int) -> None:
+    """Apply bold white-on-blue styling to the first row."""
+    for col_idx in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=col_idx)
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
         cell.alignment = Alignment(horizontal="center")
 
-    # Write data rows
-    for row_idx, row_data in enumerate(df[export_cols].itertuples(index=False), start=2):
-        for col_idx, (col_name, value) in enumerate(
-            zip(export_cols, row_data), start=1
-        ):
-            # Convert numpy types to native Python for openpyxl compatibility
-            if hasattr(value, "item"):
-                value = value.item()
 
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-
-            if col_name == BRUTSS_COLUMN:
-                cell.number_format = FRENCH_NUMBER_FORMAT
-                cell.alignment = Alignment(horizontal="right")
-
-    _auto_column_widths(ws)
+def _apply_brutss_format(ws, brutss_col_idx: int, max_row: int) -> None:
+    """Apply French number format to every BRUTSS data cell."""
+    for row_idx in range(2, max_row + 1):
+        cell = ws.cell(row=row_idx, column=brutss_col_idx)
+        cell.number_format = FRENCH_NUMBER_FORMAT
+        cell.alignment = Alignment(horizontal="right")
 
 
 def build_summary_sheet(
@@ -101,19 +67,12 @@ def build_summary_sheet(
     """
     Build Sheet 2 — Summary Report.
 
-    Layout:
-      Section A: Matched rows table (NUMCPT, NOM, PRENOM, BRUTSS breakdown)
-      Section B: Stats summary (total rows, matches, final BRUTSS total)
-
-    Parameters
-    ----------
-    ws : openpyxl Worksheet
-    duplicates : list[DuplicateMatch]
-    stats : dict  {total, duplicate_count, brutss_total}
+    Section A: Matched/added rows table
+    Section B: Stats summary
     """
     current_row = 1
 
-    # ── Section A: Matched rows (duplicates) ────────────────────────────────
+    # ── Section A: Matches ───────────────────────────────────────────────────
 
     ws.cell(row=current_row, column=1, value="CORRESPONDANCES TROUVÉES")
     ws.cell(row=current_row, column=1).font = SECTION_FONT
@@ -132,7 +91,6 @@ def build_summary_sheet(
         ws.cell(row=current_row, column=1).font = Font(italic=True, color="548235")
         current_row += 2
     else:
-        # Sub-header count
         ws.cell(
             row=current_row, column=1,
             value=f"{len(duplicates)} correspondance(s) trouvée(s)"
@@ -160,7 +118,7 @@ def build_summary_sheet(
             ws.cell(row=current_row, column=3, value=match.prenom)
 
             for col_idx, val in [(4, match.brutss_main), (5, match.brutss_additional), (6, match.brutss_sum)]:
-                cell = ws.cell(row=current_row, column=col_idx, value=val)
+                cell = ws.cell(row=current_row, column=col_idx, value=float(val))
                 cell.number_format = FRENCH_NUMBER_FORMAT
                 cell.alignment = Alignment(horizontal="right")
 
@@ -180,19 +138,20 @@ def build_summary_sheet(
     current_row += 1
 
     stat_rows = [
-        ("Lignes dans le fichier principal", stats["total"]),
-        ("Correspondances trouvées", stats["duplicate_count"]),
+        ("Lignes dans le résultat final", stats["total"]),
+        ("Correspondances trouvées (dans les 2)", stats["duplicate_count"]),
+        ("Nouvelles lignes ajoutées (additionnels uniquement)", stats.get("added_count", 0)),
     ]
     for label, value in stat_rows:
         ws.cell(row=current_row, column=1, value=label)
-        ws.cell(row=current_row, column=2, value=value)
+        ws.cell(row=current_row, column=2, value=int(value))
         current_row += 1
 
-    # Grand total with special formatting
+    # Grand total
     label_cell = ws.cell(row=current_row, column=1, value="Total BRUTSS final")
     label_cell.font = GRAND_TOTAL_FONT
     label_cell.fill = GRAND_TOTAL_FILL
-    value_cell = ws.cell(row=current_row, column=2, value=stats["brutss_total"])
+    value_cell = ws.cell(row=current_row, column=2, value=float(stats["brutss_total"]))
     value_cell.number_format = FRENCH_NUMBER_FORMAT
     value_cell.font = GRAND_TOTAL_FONT
     value_cell.fill = GRAND_TOTAL_FILL
@@ -207,34 +166,65 @@ def create_output_excel(
     stats: dict,
 ) -> bytes:
     """
-    Assemble the complete two-sheet output workbook and return as bytes.
+    Assemble the two-sheet output workbook and return as bytes.
 
-    No temp files are used — serializes directly to an in-memory BytesIO buffer.
-
-    Parameters
-    ----------
-    updated_main_df : pd.DataFrame
-    duplicates : list[DuplicateMatch]
-    stats : dict  {total, duplicate_count, brutss_total}
-
-    Returns
-    -------
-    bytes
-        Raw .xlsx bytes, ready for st.download_button(data=...).
+    Uses pandas ExcelWriter to safely write the DataFrame (handles NaN,
+    numpy types, mixed dtypes), then patches formatting with openpyxl.
     """
-    wb = openpyxl.Workbook()
+    buffer = io.BytesIO()
 
-    # Sheet 1 — Result
-    ws1 = wb.active
-    ws1.title = "Résultat"
-    build_result_sheet(ws1, updated_main_df)
+    # ── Step 1: Write data with pandas (safe type handling) ──────────────────
 
-    # Sheet 2 — Summary
+    # Prepare export DataFrame: drop _KEY, keep all other columns
+    export_df = updated_main_df.drop(columns=[KEY_COLUMN], errors="ignore").copy()
+
+    # Force large-number ID columns to string so they never become
+    # scientific notation in Excel (e.g. 790249002944 → "7,90249E+11")
+    TEXT_COLUMNS = ["NUMCPT", "NUMSS", "NUMMUT", "MATRI"]
+    for col in TEXT_COLUMNS:
+        if col in export_df.columns:
+            export_df[col] = export_df[col].astype(str).str.strip()
+            # Clean "nan" strings from NaN values
+            export_df[col] = export_df[col].replace("nan", "")
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="Résultat", index=False)
+
+    # ── Step 2: Open with openpyxl to apply formatting + add Sheet 2 ────────
+
+    buffer.seek(0)
+    wb = openpyxl.load_workbook(buffer)
+
+    # Style Sheet 1
+    ws1 = wb["Résultat"]
+    _style_header_row(ws1, ws1.max_column)
+
+    # Find BRUTSS column index (1-based) and apply French formatting
+    brutss_col_idx = None
+    for col_idx in range(1, ws1.max_column + 1):
+        if ws1.cell(row=1, column=col_idx).value == BRUTSS_COLUMN:
+            brutss_col_idx = col_idx
+            break
+
+    if brutss_col_idx:
+        _apply_brutss_format(ws1, brutss_col_idx, ws1.max_row)
+
+    # Force ID columns to text format so they never show as scientific notation
+    for col_idx in range(1, ws1.max_column + 1):
+        header = ws1.cell(row=1, column=col_idx).value
+        if header in ("NUMCPT", "NUMSS", "NUMMUT", "MATRI"):
+            for row_idx in range(2, ws1.max_row + 1):
+                ws1.cell(row=row_idx, column=col_idx).number_format = "@"
+
+    _auto_column_widths(ws1)
+
+    # Build Sheet 2 — Summary
     ws2 = wb.create_sheet(title="Résumé")
     build_summary_sheet(ws2, duplicates, stats)
 
-    # Serialize to bytes
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
+    # ── Step 3: Serialize to bytes ───────────────────────────────────────────
+
+    out_buffer = io.BytesIO()
+    wb.save(out_buffer)
+    out_buffer.seek(0)
+    return out_buffer.getvalue()
