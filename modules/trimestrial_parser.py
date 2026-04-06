@@ -137,18 +137,35 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
                 numcpt_raw=existing.numcpt_raw,
                 nom=existing.nom,
                 prenom=existing.prenom,
+                numss=existing.numss,
+                adm=existing.adm,
                 brutss_cents=existing.brutss_cents + brutss_cents,
             )
         else:
-            # First occurrence — preserve original NUMCPT (with leading zeros)
+            # First occurrence — preserve original values
             numcpt_raw = str(row.get("NUMCPT", "")).strip()
             nom = str(row.get("NOM", "")).strip()
             prenom = str(row.get("PRENOM", "")).strip()
+
+            # NUMSS and ADM are optional — keep empty string if column absent or NaN
+            import pandas as _pd
+
+            numss_raw = row.get("NUMSS", "")
+            numss = "" if _pd.isna(numss_raw) else str(numss_raw).strip()
+            if numss == "nan":
+                numss = ""
+
+            adm_raw = row.get("ADM", "")
+            adm = "" if _pd.isna(adm_raw) else str(adm_raw).strip()
+            if adm == "nan":
+                adm = ""
 
             lookup[key] = MonthlyEntry(
                 numcpt_raw=numcpt_raw,
                 nom=nom,
                 prenom=prenom,
+                numss=numss,
+                adm=adm,
                 brutss_cents=brutss_cents,
             )
 

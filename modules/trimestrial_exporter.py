@@ -249,6 +249,8 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
     for row in result.rows:
         row_dict = {
             "NUMCPT": row.numcpt_raw,
+            "NUMSS": row.numss,
+            "ADM": row.adm,
             "NOM": row.nom,
             "PRENOM": row.prenom,
         }
@@ -260,10 +262,11 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
 
     export_df = pd.DataFrame(data)
 
-    # Ensure NUMCPT stays as string (preserve leading zeros)
+    # Ensure ID columns stay as string (preserve leading zeros)
     if not export_df.empty:
-        export_df["NUMCPT"] = export_df["NUMCPT"].astype(str).str.strip()
-        export_df["NUMCPT"] = export_df["NUMCPT"].replace("nan", "")
+        for col in ("NUMCPT", "NUMSS", "ADM"):
+            export_df[col] = export_df[col].astype(str).str.strip()
+            export_df[col] = export_df[col].replace({"nan": "", "None": ""})
 
     # All BRUTSS columns that need French number formatting
     all_brutss_columns = set(brutss_col_names + ["BRUTSS_TOTAL"])
@@ -288,10 +291,10 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
                     cell.number_format = FRENCH_NUMBER_FORMAT
                     cell.alignment = Alignment(horizontal="right")
 
-        # Force NUMCPT to text format (@) to preserve leading zeros
+        # Force NUMCPT and NUMSS to text format (@) to preserve leading zeros
         for col_idx in range(1, ws1.max_column + 1):
             header = ws1.cell(row=1, column=col_idx).value
-            if header == "NUMCPT":
+            if header in ("NUMCPT", "NUMSS"):
                 for row_idx in range(2, ws1.max_row + 1):
                     ws1.cell(row=row_idx, column=col_idx).number_format = "@"
 

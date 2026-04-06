@@ -32,6 +32,8 @@ class MonthlyEntry(NamedTuple):
     numcpt_raw: str   # Original NUMCPT (preserves leading zeros for output)
     nom: str
     prenom: str
+    numss: str        # NUMSS (social security number), empty string if absent
+    adm: str          # ADM code, empty string if absent
     brutss_cents: int  # BRUTSS in integer cents (e.g. 1234.56 → 123456)
 
 
@@ -47,6 +49,8 @@ class ConsolidatedRow(NamedTuple):
     numcpt_raw: str              # Original NUMCPT (with leading zeros preserved)
     nom: str
     prenom: str
+    numss: str                   # NUMSS from first available month, "" if absent
+    adm: str                     # ADM from first available month, "" if absent
     monthly_brutss_cents: tuple  # (m1_cents, m2_cents, m3_cents) in file order
     brutss_total: int            # Sum of all three months in cents
 
