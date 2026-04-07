@@ -138,30 +138,56 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     ValueError
         If one or more values fail conversion. Lists every bad row.
     """
+    col = df[BRUTSS_COLUMN]
+
+    # ── Fast path: column is already numeric (int/float dtype) ──────────
+    if pd.api.types.is_numeric_dtype(col):
+        if col.isna().any():
+            na_indices = col.index[col.isna()].tolist()
+            errors = [
+                f"  Row {idx + 2} (index {idx}): empty/null value"
+                for idx in na_indices
+            ]
+            raise ValueError(
+                f"File '{filename}': Failed to convert BRUTSS values to numbers.\n"
+                f"The following rows have invalid values:\n"
+                + "\n".join(errors)
+                + "\nPlease fix the source file and re-upload."
+            )
+        result_df = df.copy()
+        result_df[BRUTSS_COLUMN] = col.astype("float64")
+        return result_df
+
+    # ── Slow path: mixed types — separate numeric from string values ────
+    # Try pd.to_numeric first; values that fail become NaN
+    numeric_attempt = pd.to_numeric(col, errors="coerce")
+
+    # Identify originally-NaN values (hard error)
+    orig_na_mask = col.isna()
+
+    # Identify values that were successfully converted
+    converted_mask = numeric_attempt.notna() & ~orig_na_mask
+
+    # Identify string values that need cleaning (not NaN originally, but failed numeric)
+    needs_cleaning = numeric_attempt.isna() & ~orig_na_mask
+
     errors = []
-    converted = []
+    result_series = numeric_attempt.copy()
 
-    for idx, raw_value in enumerate(df[BRUTSS_COLUMN]):
-        row_number = idx + 2  # 1-based + 1 for header row
+    # Report originally-NaN values as errors
+    if orig_na_mask.any():
+        for idx in col.index[orig_na_mask]:
+            errors.append(f"  Row {idx + 2} (index {idx}): empty/null value")
 
-        # Hard error on NaN / None
-        if pd.isna(raw_value):
-            errors.append(f"  Row {row_number} (index {idx}): empty/null value")
-            converted.append(None)
-            continue
-
-        # Already numeric → pass through
-        if isinstance(raw_value, (int, float)):
-            converted.append(float(raw_value))
-            continue
-
-        # String → clean and convert
-        try:
-            cleaned = detect_and_clean_number_string(str(raw_value))
-            converted.append(float(cleaned))
-        except ValueError as e:
-            errors.append(f"  Row {row_number} (index {idx}): '{raw_value}' → {e}")
-            converted.append(None)
+    # Clean string values that couldn't be converted directly
+    if needs_cleaning.any():
+        for idx in col.index[needs_cleaning]:
+            raw_value = col.iloc[idx] if isinstance(col.index, pd.RangeIndex) else col.loc[idx]
+            try:
+                cleaned = detect_and_clean_number_string(str(raw_value))
+                result_series.iat[col.index.get_loc(idx)] = float(cleaned)
+            except ValueError as e:
+                errors.append(f"  Row {idx + 2} (index {idx}): '{raw_value}' → {e}")
 
     if errors:
         error_detail = "\n".join(errors)
@@ -173,7 +199,7 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         )
 
     result_df = df.copy()
-    result_df[BRUTSS_COLUMN] = pd.array(converted, dtype="float64")
+    result_df[BRUTSS_COLUMN] = result_series.astype("float64")
     return result_df
 
 
@@ -219,9 +245,7 @@ def build_composite_key(df: pd.DataFrame) -> pd.DataFrame:
     pd.DataFrame
         Copy of df with an added '_KEY' column.
     """
-    result_df = df.copy()
-    result_df[KEY_COLUMN] = _normalize_numcpt(result_df["NUMCPT"])
-    return result_df
+    return df.assign(**{KEY_COLUMN: _normalize_numcpt(df["NUMCPT"])})
 
 
 def clean_all_dataframes(

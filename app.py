@@ -11,6 +11,7 @@ Tab 3: Payroll calculation (RETSS / PARTSS / NETPAI)
 """
 
 import streamlit as st
+import pandas as pd
 
 from modules.validator import validate_all_files
 from modules.cleaner import clean_all_dataframes
@@ -37,38 +38,29 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Session state initialisation
+# Session state initialisation (single loop instead of 12 individual checks)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Tab 1 state
-if "result_bytes" not in st.session_state:
-    st.session_state["result_bytes"] = None
-if "error_message" not in st.session_state:
-    st.session_state["error_message"] = None
-if "processing_info" not in st.session_state:
-    st.session_state["processing_info"] = None
-if "processing_tab1" not in st.session_state:
-    st.session_state["processing_tab1"] = False
-
-# Tab 2 state
-if "trim_result_bytes" not in st.session_state:
-    st.session_state["trim_result_bytes"] = None
-if "trim_error_message" not in st.session_state:
-    st.session_state["trim_error_message"] = None
-if "trim_processing_info" not in st.session_state:
-    st.session_state["trim_processing_info"] = None
-if "processing_tab2" not in st.session_state:
-    st.session_state["processing_tab2"] = False
-
-# Tab 3 state
-if "pay_result_bytes" not in st.session_state:
-    st.session_state["pay_result_bytes"] = None
-if "pay_error_message" not in st.session_state:
-    st.session_state["pay_error_message"] = None
-if "pay_processing_info" not in st.session_state:
-    st.session_state["pay_processing_info"] = None
-if "processing_tab3" not in st.session_state:
-    st.session_state["processing_tab3"] = False
+_SESSION_DEFAULTS = {
+    # Tab 1
+    "result_bytes": None,
+    "error_message": None,
+    "processing_info": None,
+    "processing_tab1": False,
+    # Tab 2
+    "trim_result_bytes": None,
+    "trim_error_message": None,
+    "trim_processing_info": None,
+    "processing_tab2": False,
+    # Tab 3
+    "pay_result_bytes": None,
+    "pay_error_message": None,
+    "pay_processing_info": None,
+    "processing_tab3": False,
+}
+for _key, _default in _SESSION_DEFAULTS.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tabs
@@ -485,7 +477,6 @@ with tab2:
                     st.success(f"✅ **{label}** — Aucun absent (tous les employés sont présents)")
                 else:
                     with st.expander(f"⚠️ **{label}** — {count} employé(s) absent(s)", expanded=False):
-                        import pandas as pd
                         missing_df = pd.DataFrame(
                             missing_list,
                             columns=["NUMCPT", "NOM", "PRENOM"],

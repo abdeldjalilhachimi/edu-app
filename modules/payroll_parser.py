@@ -48,28 +48,47 @@ def _convert_netpai_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     pd.DataFrame
         Same DataFrame with NETPAI column as float64.
     """
-    col = "NETPAI"
+    col_name = "NETPAI"
+    col = df[col_name]
+
+    # ── Fast path: column is already numeric ────────────────────────────
+    if pd.api.types.is_numeric_dtype(col):
+        if col.isna().any():
+            na_indices = col.index[col.isna()].tolist()
+            errors = [
+                f"  Row {idx + 2} (index {idx}): empty/null value"
+                for idx in na_indices
+            ]
+            raise ValueError(
+                f"File '{filename}': Failed to convert NETPAI values to numbers.\n"
+                f"The following rows have invalid values:\n"
+                + "\n".join(errors)
+                + "\nPlease fix the source file and re-upload."
+            )
+        result_df = df.copy()
+        result_df[col_name] = col.astype("float64")
+        return result_df
+
+    # ── Slow path: mixed types ──────────────────────────────────────────
+    numeric_attempt = pd.to_numeric(col, errors="coerce")
+    orig_na_mask = col.isna()
+    needs_cleaning = numeric_attempt.isna() & ~orig_na_mask
+
     errors = []
-    converted = []
+    result_series = numeric_attempt.copy()
 
-    for idx, raw_value in enumerate(df[col]):
-        row_number = idx + 2  # 1-based + header
+    if orig_na_mask.any():
+        for idx in col.index[orig_na_mask]:
+            errors.append(f"  Row {idx + 2} (index {idx}): empty/null value")
 
-        if pd.isna(raw_value):
-            errors.append(f"  Row {row_number} (index {idx}): empty/null value")
-            converted.append(None)
-            continue
-
-        if isinstance(raw_value, (int, float)):
-            converted.append(float(raw_value))
-            continue
-
-        try:
-            cleaned = detect_and_clean_number_string(str(raw_value))
-            converted.append(float(cleaned))
-        except ValueError as e:
-            errors.append(f"  Row {row_number} (index {idx}): '{raw_value}' → {e}")
-            converted.append(None)
+    if needs_cleaning.any():
+        for idx in col.index[needs_cleaning]:
+            raw_value = col.iloc[idx] if isinstance(col.index, pd.RangeIndex) else col.loc[idx]
+            try:
+                cleaned = detect_and_clean_number_string(str(raw_value))
+                result_series.iat[col.index.get_loc(idx)] = float(cleaned)
+            except ValueError as e:
+                errors.append(f"  Row {idx + 2} (index {idx}): '{raw_value}' → {e}")
 
     if errors:
         error_detail = "\n".join(errors)
@@ -81,7 +100,7 @@ def _convert_netpai_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         )
 
     result_df = df.copy()
-    result_df[col] = pd.array(converted, dtype="float64")
+    result_df[col_name] = result_series.astype("float64")
     return result_df
 
 
@@ -145,37 +164,35 @@ def parse_payroll_file(file_obj, filename: str) -> list:
     # Step 5: Normalize NUMCPT
     df["_NUMCPT_NORM"] = _normalize_numcpt(df["NUMCPT"])
 
-    # Step 6 & 7: Group by NUMCPT, sum values, convert to cents
-    lookup: dict = {}  # numcpt_norm → PayrollEmployee
+    # Step 6 & 7: Filter empty keys, groupby, sum values, convert to cents
 
-    for _, row in df.iterrows():
-        norm = row["_NUMCPT_NORM"]
+    # Filter rows with empty normalized NUMCPT (vectorized)
+    valid_mask = df["_NUMCPT_NORM"].astype(str).str.strip().ne("")
+    df = df[valid_mask]
 
-        if not norm or str(norm).strip() == "":
-            continue
+    if df.empty:
+        return []
 
-        brutss_cents = _float_to_cents(float(row["BRUTSS"]))
-        netpai_cents = _float_to_cents(float(row["NETPAI"]))
+    # Vectorized cleanup of identity columns
+    df["NUMCPT"] = df["NUMCPT"].astype(str).str.strip()
+    df["NOM"] = df["NOM"].astype(str).str.strip()
+    df["PRENOM"] = df["PRENOM"].astype(str).str.strip()
 
-        if norm in lookup:
-            existing = lookup[norm]
-            lookup[norm] = PayrollEmployee(
-                numcpt_raw=existing.numcpt_raw,
-                numcpt_norm=existing.numcpt_norm,
-                nom=existing.nom,
-                prenom=existing.prenom,
-                brutss_cents=existing.brutss_cents + brutss_cents,
-                netpai_cents=existing.netpai_cents + netpai_cents,
-            )
-        else:
-            lookup[norm] = PayrollEmployee(
-                numcpt_raw=str(row.get("NUMCPT", "")).strip(),
-                numcpt_norm=norm,
-                nom=str(row.get("NOM", "")).strip(),
-                prenom=str(row.get("PRENOM", "")).strip(),
-                brutss_cents=brutss_cents,
-                netpai_cents=netpai_cents,
-            )
+    # Groupby normalized NUMCPT: sum BRUTSS + NETPAI, keep first identity
+    group_key = "_NUMCPT_NORM"
+    sums = df.groupby(group_key)[["BRUTSS", "NETPAI"]].sum()
+    first_rows = df.groupby(group_key)[["NUMCPT", "NOM", "PRENOM"]].first()
 
-    # Return as sorted list
-    return sorted(lookup.values(), key=lambda e: e.numcpt_norm)
+    # Build result list from small deduplicated set
+    employees = []
+    for norm in sorted(sums.index):
+        employees.append(PayrollEmployee(
+            numcpt_raw=first_rows.at[norm, "NUMCPT"],
+            numcpt_norm=norm,
+            nom=first_rows.at[norm, "NOM"],
+            prenom=first_rows.at[norm, "PRENOM"],
+            brutss_cents=_float_to_cents(float(sums.at[norm, "BRUTSS"])),
+            netpai_cents=_float_to_cents(float(sums.at[norm, "NETPAI"])),
+        ))
+
+    return employees

@@ -84,15 +84,21 @@ def _build_data_sheet(ws, rows: list, sheet_title: str) -> None:
 
     _style_header_row(ws, len(DATA_COLUMNS))
 
-    # Write data rows
+    # Write data rows with formatting applied in the same pass
+    right_align = Alignment(horizontal="right")
     for row_idx, emp in enumerate(rows, start=2):
-        ws.cell(row=row_idx, column=1, value=emp.numcpt_raw)
+        # NUMCPT — text format
+        c1 = ws.cell(row=row_idx, column=1, value=emp.numcpt_raw)
+        c1.number_format = "@"
+        # NOM, PRENOM — no special format
         ws.cell(row=row_idx, column=2, value=emp.nom)
         ws.cell(row=row_idx, column=3, value=emp.prenom)
-        ws.cell(row=row_idx, column=4, value=_cents_to_float(emp.brutss_cents))
-        ws.cell(row=row_idx, column=5, value=_cents_to_float(emp.retss_cents))
-        ws.cell(row=row_idx, column=6, value=_cents_to_float(emp.partss_cents))
-        ws.cell(row=row_idx, column=7, value=_cents_to_float(emp.netpai_cents))
+        # Money columns — French number format
+        for col_idx, cents in ((4, emp.brutss_cents), (5, emp.retss_cents),
+                               (6, emp.partss_cents), (7, emp.netpai_cents)):
+            cell = ws.cell(row=row_idx, column=col_idx, value=_cents_to_float(cents))
+            cell.number_format = FRENCH_NUMBER_FORMAT
+            cell.alignment = right_align
 
     # Total row
     if rows:
@@ -115,18 +121,7 @@ def _build_data_sheet(ws, rows: list, sheet_title: str) -> None:
             cell.number_format = FRENCH_NUMBER_FORMAT
             cell.font = GRAND_TOTAL_FONT
             cell.fill = GRAND_TOTAL_FILL
-            cell.alignment = Alignment(horizontal="right")
-
-    # Apply formatting to all data rows
-    for col_idx in range(1, len(DATA_COLUMNS) + 1):
-        header = DATA_COLUMNS[col_idx - 1]
-        for row_idx in range(2, len(rows) + 2):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            if header == "NUMCPT":
-                cell.number_format = "@"  # text format
-            elif header in MONEY_COLUMNS:
-                cell.number_format = FRENCH_NUMBER_FORMAT
-                cell.alignment = Alignment(horizontal="right")
+            cell.alignment = right_align
 
     _auto_column_widths(ws)
 

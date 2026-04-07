@@ -273,11 +273,13 @@ def create_trimestrial_excel(result: TrimestrialResult, anref_year: int = 2025) 
     export_df["UNBRTRAV"] = "J"
     export_df["OBSERV"] = ""
 
-    # Ensure ID columns stay as string (preserve leading zeros)
+    # Ensure ID columns stay as string (preserve leading zeros) — chained vectorized
     if not export_df.empty:
         for col in ("NUMCPT", "NUMSS", "ADM", "NEMPLOYEUR"):
-            export_df[col] = export_df[col].astype(str).str.strip()
-            export_df[col] = export_df[col].replace({"nan": "", "None": ""})
+            export_df[col] = (
+                export_df[col].astype(str).str.strip()
+                .replace({"nan": "", "None": ""})
+            )
 
     # All BRUTSS columns that need French number formatting
     all_brutss_columns = set(brutss_col_names + ["BRUTSS_TOTAL"])
@@ -293,20 +295,25 @@ def create_trimestrial_excel(result: TrimestrialResult, anref_year: int = 2025) 
         # Style header row
         _style_header_row(ws1, ws1.max_column)
 
-        # Apply French number format to all BRUTSS columns (dynamic names)
+        # Pre-compute column roles for single-pass formatting
+        brutss_col_indices = set()
+        text_col_indices = set()
         for col_idx in range(1, ws1.max_column + 1):
             header = ws1.cell(row=1, column=col_idx).value
             if header in all_brutss_columns:
-                for row_idx in range(2, ws1.max_row + 1):
+                brutss_col_indices.add(col_idx)
+            elif header in ("NUMCPT", "NUMSS", "NEMPLOYEUR"):
+                text_col_indices.add(col_idx)
+
+        # Single pass over all data cells
+        right_align = Alignment(horizontal="right")
+        if brutss_col_indices or text_col_indices:
+            for row_idx in range(2, ws1.max_row + 1):
+                for col_idx in brutss_col_indices:
                     cell = ws1.cell(row=row_idx, column=col_idx)
                     cell.number_format = FRENCH_NUMBER_FORMAT
-                    cell.alignment = Alignment(horizontal="right")
-
-        # Force ID columns to text format (@) to preserve leading zeros
-        for col_idx in range(1, ws1.max_column + 1):
-            header = ws1.cell(row=1, column=col_idx).value
-            if header in ("NUMCPT", "NUMSS", "NEMPLOYEUR"):
-                for row_idx in range(2, ws1.max_row + 1):
+                    cell.alignment = right_align
+                for col_idx in text_col_indices:
                     ws1.cell(row=row_idx, column=col_idx).number_format = "@"
 
         _auto_column_widths(ws1)

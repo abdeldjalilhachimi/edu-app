@@ -10,7 +10,6 @@ Reuses the existing validator and cleaner modules for file loading,
 column validation, and BRUTSS string-to-float conversion.
 """
 
-import math
 import pandas as pd
 
 from modules.validator import (
@@ -117,68 +116,54 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
     # Step 5: Normalize NUMCPT
     df["_NUMCPT_NORM"] = _normalize_numcpt(df["NUMCPT"])
 
-    # Step 6 & 7: Group by key, sum BRUTSS, convert to cents
-    lookup: dict = {}
+    # Step 6: Filter empty keys, clean optional columns, groupby, convert to cents
 
-    for _, row in df.iterrows():
-        norm_numcpt = row["_NUMCPT_NORM"]
+    # Filter rows with empty normalized NUMCPT (vectorized)
+    valid_mask = df["_NUMCPT_NORM"].astype(str).str.strip().ne("")
+    df = df[valid_mask]
 
-        # Skip rows with empty key
-        if not norm_numcpt or str(norm_numcpt).strip() == "":
-            continue
+    if df.empty:
+        return {}
 
-        key = _build_employee_key(norm_numcpt)
-        brutss_cents = _float_to_cents(float(row[BRUTSS_COLUMN]))
+    # Vectorized cleanup: identity columns
+    df["NUMCPT"] = df["NUMCPT"].astype(str).str.strip()
+    df["NOM"] = df["NOM"].astype(str).str.strip()
+    df["PRENOM"] = df["PRENOM"].astype(str).str.strip()
 
-        if key in lookup:
-            # Same employee appears multiple times → sum BRUTSS
-            existing = lookup[key]
-            lookup[key] = MonthlyEntry(
-                numcpt_raw=existing.numcpt_raw,
-                nom=existing.nom,
-                prenom=existing.prenom,
-                numss=existing.numss,
-                adm=existing.adm,
-                datnais=existing.datnais,
-                nbrtrav=existing.nbrtrav,
-                datent=existing.datent,
-                datsor=existing.datsor,
-                brutss_cents=existing.brutss_cents + brutss_cents,
+    # Vectorized cleanup: optional columns — fillna + strip + replace nan/None
+    _OPT_COLS = ["NUMSS", "ADM", "DATNAIS", "NBRTRAV", "DATENT", "DATSOR"]
+    for col_name in _OPT_COLS:
+        if col_name in df.columns:
+            df[col_name] = (
+                df[col_name].fillna("").astype(str).str.strip()
+                .replace({"nan": "", "None": ""})
             )
         else:
-            # First occurrence — preserve original values
-            numcpt_raw = str(row.get("NUMCPT", "")).strip()
-            nom = str(row.get("NOM", "")).strip()
-            prenom = str(row.get("PRENOM", "")).strip()
+            df[col_name] = ""
 
-            # Optional columns — keep empty string if column absent or NaN
-            import pandas as _pd
+    # Group by normalized NUMCPT: sum BRUTSS, keep first row for identity
+    group_key = "_NUMCPT_NORM"
+    brutss_sums = df.groupby(group_key)[BRUTSS_COLUMN].sum()
+    first_rows = df.groupby(group_key).first()
 
-            def _safe_str(raw_val):
-                if _pd.isna(raw_val):
-                    return ""
-                s = str(raw_val).strip()
-                return "" if s in ("nan", "None") else s
+    # Build lookup dict from grouped result (iterating over small deduplicated set)
+    lookup: dict = {}
+    for norm_numcpt, row in first_rows.iterrows():
+        key = _build_employee_key(norm_numcpt)
+        brutss_cents = _float_to_cents(float(brutss_sums[norm_numcpt]))
 
-            numss = _safe_str(row.get("NUMSS", ""))
-            adm = _safe_str(row.get("ADM", ""))
-            datnais = _safe_str(row.get("DATNAIS", ""))
-            nbrtrav = _safe_str(row.get("NBRTRAV", ""))
-            datent = _safe_str(row.get("DATENT", ""))
-            datsor = _safe_str(row.get("DATSOR", ""))
-
-            lookup[key] = MonthlyEntry(
-                numcpt_raw=numcpt_raw,
-                nom=nom,
-                prenom=prenom,
-                numss=numss,
-                adm=adm,
-                datnais=datnais,
-                nbrtrav=nbrtrav,
-                datent=datent,
-                datsor=datsor,
-                brutss_cents=brutss_cents,
-            )
+        lookup[key] = MonthlyEntry(
+            numcpt_raw=row["NUMCPT"],
+            nom=row["NOM"],
+            prenom=row["PRENOM"],
+            numss=row.get("NUMSS", ""),
+            adm=row.get("ADM", ""),
+            datnais=row.get("DATNAIS", ""),
+            nbrtrav=row.get("NBRTRAV", ""),
+            datent=row.get("DATENT", ""),
+            datsor=row.get("DATSOR", ""),
+            brutss_cents=brutss_cents,
+        )
 
     return lookup
 
