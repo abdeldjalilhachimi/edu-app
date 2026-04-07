@@ -34,6 +34,10 @@ class MonthlyEntry(NamedTuple):
     prenom: str
     numss: str        # NUMSS (social security number), empty string if absent
     adm: str          # ADM code, empty string if absent
+    datnais: str      # Date de naissance, empty string if absent
+    nbrtrav: str      # Nombre de jours travaillés, empty string if absent
+    datent: str       # Date d'entrée, empty string if absent
+    datsor: str       # Date de sortie, empty string if absent
     brutss_cents: int  # BRUTSS in integer cents (e.g. 1234.56 → 123456)
 
 
@@ -51,6 +55,10 @@ class ConsolidatedRow(NamedTuple):
     prenom: str
     numss: str                   # NUMSS from first available month, "" if absent
     adm: str                     # ADM from first available month, "" if absent
+    datnais: str                 # Date de naissance, "" if absent
+    nbrtrav: str                 # Nombre de jours travaillés, "" if absent
+    datent: str                  # Date d'entrée, "" if absent
+    datsor: str                  # Date de sortie, "" if absent
     monthly_brutss_cents: tuple  # (m1_cents, m2_cents, m3_cents) in file order
     brutss_total: int            # Sum of all three months in cents
 

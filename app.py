@@ -7,6 +7,7 @@ No data manipulation occurs in this file.
 
 Tab 1: Multi-file merge (original feature)
 Tab 2: Trimestrial BRUTSS consolidation (3 monthly files → 1 output)
+Tab 3: Payroll calculation (RETSS / PARTSS / NETPAI)
 """
 
 import streamlit as st
@@ -20,6 +21,10 @@ from modules.trimestrial_parser import parse_monthly_file, validate_trimestrial_
 from modules.trimestrial_merger import merge_trimestrial
 from modules.trimestrial_exporter import create_trimestrial_excel, _format_french
 from modules.trimestrial_types import filename_to_label
+
+from modules.payroll_parser import parse_payroll_file
+from modules.payroll_calculator import calculate_payroll
+from modules.payroll_exporter import create_payroll_excel, _format_french_payroll
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page configuration
@@ -42,6 +47,8 @@ if "error_message" not in st.session_state:
     st.session_state["error_message"] = None
 if "processing_info" not in st.session_state:
     st.session_state["processing_info"] = None
+if "processing_tab1" not in st.session_state:
+    st.session_state["processing_tab1"] = False
 
 # Tab 2 state
 if "trim_result_bytes" not in st.session_state:
@@ -50,12 +57,28 @@ if "trim_error_message" not in st.session_state:
     st.session_state["trim_error_message"] = None
 if "trim_processing_info" not in st.session_state:
     st.session_state["trim_processing_info"] = None
+if "processing_tab2" not in st.session_state:
+    st.session_state["processing_tab2"] = False
+
+# Tab 3 state
+if "pay_result_bytes" not in st.session_state:
+    st.session_state["pay_result_bytes"] = None
+if "pay_error_message" not in st.session_state:
+    st.session_state["pay_error_message"] = None
+if "pay_processing_info" not in st.session_state:
+    st.session_state["pay_processing_info"] = None
+if "processing_tab3" not in st.session_state:
+    st.session_state["processing_tab3"] = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["📊 Fusion Multi-Fichiers", "📅 Consolidation Trimestrielle"])
+tab1, tab2, tab3 = st.tabs([
+    "📊 Fusion Multi-Fichiers",
+    "📅 Consolidation Trimestrielle",
+    "💰 Calcul Paie (RETSS/PARTSS)",
+])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Multi-file merge (original feature)
@@ -84,6 +107,7 @@ with tab1:
             accept_multiple_files=False,
             key="main_file_uploader",
             label_visibility="collapsed",
+            disabled=st.session_state["processing_tab1"],
         )
         if main_file:
             st.success(f"✅ {main_file.name} ({main_file.size / 1024:.1f} Ko)")
@@ -97,6 +121,7 @@ with tab1:
             accept_multiple_files=True,
             key="additional_files_uploader",
             label_visibility="collapsed",
+            disabled=st.session_state["processing_tab1"],
         )
         if additional_files:
             for f in additional_files:
@@ -110,7 +135,17 @@ with tab1:
         "📑 Inclure les feuilles internes comme données additionnelles",
         value=False,
         help="Si coché, les feuilles supplémentaires dans chaque fichier (ex: RAP1, RAP2...) "
-             "seront automatiquement traitées comme des fichiers additionnels."
+             "seront automatiquement traitées comme des fichiers additionnels.",
+        disabled=st.session_state["processing_tab1"],
+    )
+
+    anref_year = st.number_input(
+        "📅 ANREF (année de référence)",
+        min_value=2020,
+        max_value=2099,
+        value=2025,
+        step=1,
+        disabled=st.session_state["processing_tab1"],
     )
 
     st.divider()
@@ -130,27 +165,30 @@ with tab1:
     process_clicked = st.button(
         "▶  Traiter les fichiers",
         type="primary",
-        disabled=not files_ready,
+        disabled=not files_ready or st.session_state["processing_tab1"],
         use_container_width=False,
         key="btn_tab1",
     )
 
     # ── Processing pipeline ──────────────────────────────────────────────────
 
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
     if process_clicked and files_ready:
-        # Clear previous results
         st.session_state["result_bytes"] = None
         st.session_state["error_message"] = None
         st.session_state["processing_info"] = None
+        st.session_state["processing_tab1"] = True
+        st.rerun()
 
+    # Pass 2: flag is True → widgets are disabled, now run the actual pipeline
+    if st.session_state["processing_tab1"] and main_file is not None:
         main_filename = main_file.name
         add_files = additional_files if additional_files else []
         add_filenames = [f.name for f in add_files]
 
         try:
-            with st.spinner("Validation et traitement en cours…"):
+            with st.spinner("⏳ Traitement en cours…"):
 
-                # Step 1 — Validate all files (+ internal sheets if enabled)
                 main_df, additional_dfs, additional_names, dropped_counts = validate_all_files(
                     main_file=main_file,
                     main_filename=main_filename,
@@ -159,7 +197,6 @@ with tab1:
                     include_internal_sheets=include_internal,
                 )
 
-                # Step 2 — Clean and normalize BRUTSS; build composite keys
                 main_clean, additional_clean = clean_all_dataframes(
                     main_df=main_df,
                     additional_dfs=additional_dfs,
@@ -167,17 +204,16 @@ with tab1:
                     additional_filenames=additional_names,
                 )
 
-                # Step 3 — Key-based merge: match rows + update BRUTSS
                 result = run_calculation(
                     main_df=main_clean,
                     additional_dfs=additional_clean,
                 )
 
-                # Step 4 — Build output Excel bytes
                 output_bytes = create_output_excel(
                     updated_main_df=result.updated_main_df,
                     duplicates=result.duplicates,
                     stats=result.stats,
+                    anref_year=int(anref_year),
                 )
 
             # Store results in session state so they persist on re-render
@@ -193,6 +229,8 @@ with tab1:
 
         except ValueError as e:
             st.session_state["error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab1"] = False
 
     # ── Results / Error display ──────────────────────────────────────────────
 
@@ -274,6 +312,7 @@ with tab2:
             accept_multiple_files=False,
             key="trim_file_m1",
             label_visibility="collapsed",
+            disabled=st.session_state["processing_tab2"],
         )
         if file_m1:
             st.success(f"✅ {file_m1.name} ({file_m1.size / 1024:.1f} Ko)")
@@ -287,6 +326,7 @@ with tab2:
             accept_multiple_files=False,
             key="trim_file_m2",
             label_visibility="collapsed",
+            disabled=st.session_state["processing_tab2"],
         )
         if file_m2:
             st.success(f"✅ {file_m2.name} ({file_m2.size / 1024:.1f} Ko)")
@@ -300,9 +340,22 @@ with tab2:
             accept_multiple_files=False,
             key="trim_file_m3",
             label_visibility="collapsed",
+            disabled=st.session_state["processing_tab2"],
         )
         if file_m3:
             st.success(f"✅ {file_m3.name} ({file_m3.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    trim_anref_year = st.number_input(
+        "📅 ANREF (année de référence)",
+        min_value=2020,
+        max_value=2099,
+        value=2025,
+        step=1,
+        disabled=st.session_state["processing_tab2"],
+        key="trim_anref_year",
+    )
 
     st.divider()
 
@@ -323,38 +376,38 @@ with tab2:
     trim_clicked = st.button(
         "▶  Consolider le trimestre",
         type="primary",
-        disabled=not trim_ready,
+        disabled=not trim_ready or st.session_state["processing_tab2"],
         use_container_width=False,
         key="btn_tab2",
     )
 
     # ── Processing pipeline ──────────────────────────────────────────────────
 
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
     if trim_clicked and trim_ready:
-        # Clear previous results
         st.session_state["trim_result_bytes"] = None
         st.session_state["trim_error_message"] = None
         st.session_state["trim_processing_info"] = None
+        st.session_state["processing_tab2"] = True
+        st.rerun()
 
+    # Pass 2: flag is True → widgets are disabled, now run the actual pipeline
+    if st.session_state["processing_tab2"] and file_m1 is not None and file_m2 is not None and file_m3 is not None:
         try:
-            with st.spinner("Validation et consolidation en cours…"):
+            with st.spinner("⏳ Consolidation en cours…"):
 
-                # Step 1 — Validate that all 3 files are present
                 validate_trimestrial_files(file_m1, file_m2, file_m3)
 
-                # Step 2 — Parse each monthly file (load, validate, convert, group)
                 month1 = parse_monthly_file(file_m1, file_m1.name)
                 month2 = parse_monthly_file(file_m2, file_m2.name)
                 month3 = parse_monthly_file(file_m3, file_m3.name)
 
-                # Step 3 — Merge into consolidated trimestrial result
                 trim_result = merge_trimestrial(
                     month1, month2, month3,
                     file_m1.name, file_m2.name, file_m3.name,
                 )
 
-                # Step 4 — Build output Excel bytes
-                trim_bytes = create_trimestrial_excel(trim_result)
+                trim_bytes = create_trimestrial_excel(trim_result, anref_year=int(trim_anref_year))
 
             # Store results in session state
             st.session_state["trim_result_bytes"] = trim_bytes
@@ -371,6 +424,8 @@ with tab2:
 
         except ValueError as e:
             st.session_state["trim_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab2"] = False
 
     # ── Results / Error display ──────────────────────────────────────────────
 
@@ -440,6 +495,141 @@ with tab2:
         else:
             st.divider()
             st.success("✅ Aucune absence détectée — tous les employés sont présents dans les 3 fichiers.")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Payroll calculation (RETSS / PARTSS / NETPAI)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab3:
+
+    st.markdown(
+        "Calculez les cotisations **RETSS** (9 %) et **PARTSS** à partir du **BRUTSS** "
+        "de chaque employé. Le **NETPAI** est lu directement depuis le fichier.\n\n"
+        "- **Titulaires** : PARTSS = 25 %\n"
+        "- **Non Titulaires** (handicap) : PARTSS = 12,5 %"
+    )
+    st.divider()
+
+    # ── Upload section ───────────────────────────────────────────────────────
+
+    st.subheader("📁 Fichier de paie")
+    st.caption("Un fichier .xlsx contenant les colonnes : BRUTSS, NETPAI, NOM, PRENOM, NUMCPT")
+    pay_file = st.file_uploader(
+        label="Fichier de paie",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="pay_file_uploader",
+        label_visibility="collapsed",
+        disabled=st.session_state["processing_tab3"],
+    )
+    if pay_file:
+        st.success(f"✅ {pay_file.name} ({pay_file.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    pay_ready = pay_file is not None
+
+    if not pay_ready:
+        st.info("ℹ️ Veuillez téléverser un fichier de paie pour continuer.")
+
+    pay_clicked = st.button(
+        "▶  Calculer la paie",
+        type="primary",
+        disabled=not pay_ready or st.session_state["processing_tab3"],
+        use_container_width=False,
+        key="btn_tab3",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
+    if pay_clicked and pay_ready:
+        st.session_state["pay_result_bytes"] = None
+        st.session_state["pay_error_message"] = None
+        st.session_state["pay_processing_info"] = None
+        st.session_state["processing_tab3"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → widgets are disabled, now run the actual pipeline
+    if st.session_state["processing_tab3"] and pay_file is not None:
+        try:
+            with st.spinner("⏳ Calcul de la paie en cours…"):
+
+                employees = parse_payroll_file(pay_file, pay_file.name)
+
+                pay_result = calculate_payroll(employees)
+
+                pay_bytes = create_payroll_excel(pay_result)
+
+            # Store results in session state
+            st.session_state["pay_result_bytes"] = pay_bytes
+            st.session_state["pay_processing_info"] = {
+                "total_employees": pay_result.stats.total_employees,
+                "confirmed_count": pay_result.stats.confirmed_count,
+                "non_confirmed_count": pay_result.stats.non_confirmed_count,
+                "grand_brutss_cents": pay_result.stats.grand_brutss_cents,
+                "grand_retss_cents": pay_result.stats.grand_retss_cents,
+                "grand_partss_cents": pay_result.stats.grand_partss_cents,
+                "grand_netpai_cents": pay_result.stats.grand_netpai_cents,
+                "confirmed_partss_cents": pay_result.stats.confirmed_partss_cents,
+                "non_confirmed_partss_cents": pay_result.stats.non_confirmed_partss_cents,
+            }
+
+        except ValueError as e:
+            st.session_state["pay_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab3"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["pay_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["pay_error_message"], language=None)
+        st.caption("Corrigez le problème dans le fichier source et re-téléversez.")
+
+    if st.session_state["pay_result_bytes"]:
+        st.divider()
+        info = st.session_state["pay_processing_info"]
+
+        st.success(
+            f"✅ Calcul terminé — "
+            f"{info['total_employees']} employé(s) traité(s) "
+            f"({info['confirmed_count']} titulaires, {info['non_confirmed_count']} non titulaires)."
+        )
+
+        # Summary metrics
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.metric("Total employés", info["total_employees"])
+        with col_b:
+            st.metric("Total BRUTSS", _format_french_payroll(info["grand_brutss_cents"]))
+        with col_c:
+            st.metric("Total RETSS (9%)", _format_french_payroll(info["grand_retss_cents"]))
+        with col_d:
+            st.metric("Total NETPAI", _format_french_payroll(info["grand_netpai_cents"]))
+
+        col_e, col_f, col_g, col_h = st.columns(4)
+        with col_e:
+            st.metric("Titulaires", info["confirmed_count"])
+        with col_f:
+            st.metric("PARTSS Titulaires (25%)", _format_french_payroll(info["confirmed_partss_cents"]))
+        with col_g:
+            st.metric("Non Titulaires", info["non_confirmed_count"])
+        with col_h:
+            st.metric("PARTSS Non Tit. (12,5%)", _format_french_payroll(info["non_confirmed_partss_cents"]))
+
+        st.download_button(
+            label="⬇  Télécharger le calcul de paie (paie.xlsx)",
+            data=st.session_state["pay_result_bytes"],
+            file_name="paie.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+            key="download_tab3",
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Footer

@@ -164,6 +164,7 @@ def create_output_excel(
     updated_main_df: pd.DataFrame,
     duplicates: list,
     stats: dict,
+    anref_year: int = 2025,
 ) -> bytes:
     """
     Assemble the two-sheet output workbook and return as bytes.
@@ -178,9 +179,16 @@ def create_output_excel(
     # Prepare export DataFrame: drop _KEY, keep all other columns
     export_df = updated_main_df.drop(columns=[KEY_COLUMN], errors="ignore").copy()
 
+    # Add 5 new columns: NEMPLOYEUR, ANREF, N, UNBRTRAV, OBSERV
+    export_df.insert(0, "NEMPLOYEUR", "0840198947")
+    export_df.insert(1, "ANREF", int(anref_year))
+    export_df.insert(2, "N", range(1, len(export_df) + 1))
+    export_df["UNBRTRAV"] = "J"
+    export_df["OBSERV"] = ""
+
     # Force large-number ID columns to string so they never become
     # scientific notation in Excel (e.g. 790249002944 → "7,90249E+11")
-    TEXT_COLUMNS = ["NUMCPT", "NUMSS", "NUMMUT", "MATRI"]
+    TEXT_COLUMNS = ["NUMCPT", "NUMSS", "NUMMUT", "MATRI", "NEMPLOYEUR"]
     for col in TEXT_COLUMNS:
         if col in export_df.columns:
             export_df[col] = export_df[col].astype(str).str.strip()

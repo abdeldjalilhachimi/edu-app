@@ -94,14 +94,27 @@ def merge_trimestrial(
         m3_cents = entry3.brutss_cents if entry3 else 0
         total_cents = m1_cents + m2_cents + m3_cents
 
-        # Pick best NUMSS and ADM: first non-empty across months (priority M1 > M2 > M3)
+        # Pick best value for optional fields: first non-empty across months (M1 > M2 > M3)
         numss = ""
         adm = ""
+        datnais = ""
+        nbrtrav = ""
+        datent = ""
+        datsor = ""
         for entry in (entry1, entry2, entry3):
-            if entry and entry.numss and not numss:
-                numss = entry.numss
-            if entry and entry.adm and not adm:
-                adm = entry.adm
+            if entry:
+                if entry.numss and not numss:
+                    numss = entry.numss
+                if entry.adm and not adm:
+                    adm = entry.adm
+                if entry.datnais and not datnais:
+                    datnais = entry.datnais
+                if entry.nbrtrav and not nbrtrav:
+                    nbrtrav = entry.nbrtrav
+                if entry.datent and not datent:
+                    datent = entry.datent
+                if entry.datsor and not datsor:
+                    datsor = entry.datsor
 
         rows.append(ConsolidatedRow(
             numcpt_raw=representative.numcpt_raw,
@@ -109,6 +122,10 @@ def merge_trimestrial(
             prenom=representative.prenom,
             numss=numss,
             adm=adm,
+            datnais=datnais,
+            nbrtrav=nbrtrav,
+            datent=datent,
+            datsor=datsor,
             monthly_brutss_cents=(m1_cents, m2_cents, m3_cents),
             brutss_total=total_cents,
         ))

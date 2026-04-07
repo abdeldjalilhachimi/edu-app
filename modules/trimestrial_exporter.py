@@ -215,7 +215,7 @@ def _build_absences_sheet(ws, missing_per_file: tuple, file_labels: tuple) -> No
     _auto_column_widths(ws)
 
 
-def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
+def create_trimestrial_excel(result: TrimestrialResult, anref_year: int = 2025) -> bytes:
     """
     Assemble the two-sheet output workbook for trimestrial consolidation.
 
@@ -253,6 +253,10 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
             "ADM": row.adm,
             "NOM": row.nom,
             "PRENOM": row.prenom,
+            "DATNAIS": row.datnais,
+            "NBRTRAV": row.nbrtrav,
+            "DATENT": row.datent,
+            "DATSOR": row.datsor,
         }
         # Add one BRUTSS column per file, named after the filename
         for i, col_name in enumerate(brutss_col_names):
@@ -262,9 +266,16 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
 
     export_df = pd.DataFrame(data)
 
+    # Add 5 extra columns: NEMPLOYEUR, ANREF, N, UNBRTRAV, OBSERV
+    export_df.insert(0, "NEMPLOYEUR", "0840198947")
+    export_df.insert(1, "ANREF", int(anref_year))
+    export_df.insert(2, "N", range(1, len(export_df) + 1))
+    export_df["UNBRTRAV"] = "J"
+    export_df["OBSERV"] = ""
+
     # Ensure ID columns stay as string (preserve leading zeros)
     if not export_df.empty:
-        for col in ("NUMCPT", "NUMSS", "ADM"):
+        for col in ("NUMCPT", "NUMSS", "ADM", "NEMPLOYEUR"):
             export_df[col] = export_df[col].astype(str).str.strip()
             export_df[col] = export_df[col].replace({"nan": "", "None": ""})
 
@@ -291,10 +302,10 @@ def create_trimestrial_excel(result: TrimestrialResult) -> bytes:
                     cell.number_format = FRENCH_NUMBER_FORMAT
                     cell.alignment = Alignment(horizontal="right")
 
-        # Force NUMCPT and NUMSS to text format (@) to preserve leading zeros
+        # Force ID columns to text format (@) to preserve leading zeros
         for col_idx in range(1, ws1.max_column + 1):
             header = ws1.cell(row=1, column=col_idx).value
-            if header in ("NUMCPT", "NUMSS"):
+            if header in ("NUMCPT", "NUMSS", "NEMPLOYEUR"):
                 for row_idx in range(2, ws1.max_row + 1):
                     ws1.cell(row=row_idx, column=col_idx).number_format = "@"
 

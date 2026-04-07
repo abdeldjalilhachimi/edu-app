@@ -139,6 +139,10 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
                 prenom=existing.prenom,
                 numss=existing.numss,
                 adm=existing.adm,
+                datnais=existing.datnais,
+                nbrtrav=existing.nbrtrav,
+                datent=existing.datent,
+                datsor=existing.datsor,
                 brutss_cents=existing.brutss_cents + brutss_cents,
             )
         else:
@@ -147,18 +151,21 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
             nom = str(row.get("NOM", "")).strip()
             prenom = str(row.get("PRENOM", "")).strip()
 
-            # NUMSS and ADM are optional — keep empty string if column absent or NaN
+            # Optional columns — keep empty string if column absent or NaN
             import pandas as _pd
 
-            numss_raw = row.get("NUMSS", "")
-            numss = "" if _pd.isna(numss_raw) else str(numss_raw).strip()
-            if numss == "nan":
-                numss = ""
+            def _safe_str(raw_val):
+                if _pd.isna(raw_val):
+                    return ""
+                s = str(raw_val).strip()
+                return "" if s in ("nan", "None") else s
 
-            adm_raw = row.get("ADM", "")
-            adm = "" if _pd.isna(adm_raw) else str(adm_raw).strip()
-            if adm == "nan":
-                adm = ""
+            numss = _safe_str(row.get("NUMSS", ""))
+            adm = _safe_str(row.get("ADM", ""))
+            datnais = _safe_str(row.get("DATNAIS", ""))
+            nbrtrav = _safe_str(row.get("NBRTRAV", ""))
+            datent = _safe_str(row.get("DATENT", ""))
+            datsor = _safe_str(row.get("DATSOR", ""))
 
             lookup[key] = MonthlyEntry(
                 numcpt_raw=numcpt_raw,
@@ -166,6 +173,10 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
                 prenom=prenom,
                 numss=numss,
                 adm=adm,
+                datnais=datnais,
+                nbrtrav=nbrtrav,
+                datent=datent,
+                datsor=datsor,
                 brutss_cents=brutss_cents,
             )
 
