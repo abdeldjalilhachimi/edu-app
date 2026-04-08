@@ -27,9 +27,13 @@ SECTION_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="
 GRAND_TOTAL_FONT = Font(bold=True)
 GRAND_TOTAL_FILL = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
 
-# Internal key column — excluded from all output
+# Internal columns — excluded from all output
 KEY_COLUMN = "_KEY"
 BRUTSS_COLUMN = "BRUTSS"
+EMPTY_BRUTSS_COLUMN = "_BRUTSS_WAS_EMPTY"
+
+# Styling for empty-BRUTSS warning sheet
+WARNING_HEADER_FILL = PatternFill(start_color="F2DCDB", end_color="F2DCDB", fill_type="solid")
 
 
 def _auto_column_widths(ws) -> None:
@@ -159,6 +163,41 @@ def build_summary_sheet(
     _auto_column_widths(ws)
 
 
+def _build_empty_brutss_sheet(ws, empty_rows: pd.DataFrame) -> None:
+    """
+    Build a sheet listing employees whose BRUTSS was empty (set to 0).
+
+    Parameters
+    ----------
+    ws : openpyxl Worksheet
+    empty_rows : pd.DataFrame
+        Rows where BRUTSS was originally empty. Must have NUMCPT, NOM, PRENOM.
+    """
+    headers = ["NUMCPT", "NOM", "PRENOM"]
+
+    # Section header
+    ws.cell(row=1, column=1, value=f"EMPLOYÉS AVEC BRUTSS VIDE ({len(empty_rows)} trouvé(s))")
+    ws.cell(row=1, column=1).font = SECTION_FONT
+    ws.cell(row=1, column=1).fill = SECTION_FILL
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+
+    # Column headers
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = WARNING_HEADER_FILL
+        cell.alignment = Alignment(horizontal="center")
+
+    # Data rows
+    for row_idx, (_, row) in enumerate(empty_rows.iterrows(), start=3):
+        ws.cell(row=row_idx, column=1, value=str(row.get("NUMCPT", "")).strip())
+        ws.cell(row=row_idx, column=1).number_format = "@"
+        ws.cell(row=row_idx, column=2, value=str(row.get("NOM", "")).strip())
+        ws.cell(row=row_idx, column=3, value=str(row.get("PRENOM", "")).strip())
+
+    _auto_column_widths(ws)
+
+
 def create_output_excel(
     updated_main_df: pd.DataFrame,
     duplicates: list,
@@ -173,8 +212,17 @@ def create_output_excel(
     """
     buffer = io.BytesIO()
 
-    # Prepare export DataFrame: drop _KEY, keep all other columns
-    export_df = updated_main_df.drop(columns=[KEY_COLUMN], errors="ignore").copy()
+    # Extract empty-BRUTSS rows before dropping internal columns
+    empty_brutss_df = pd.DataFrame()
+    if EMPTY_BRUTSS_COLUMN in updated_main_df.columns:
+        mask = updated_main_df[EMPTY_BRUTSS_COLUMN] == True
+        if mask.any():
+            empty_brutss_df = updated_main_df.loc[mask, ["NUMCPT", "NOM", "PRENOM"]].copy()
+
+    # Prepare export DataFrame: drop internal columns
+    export_df = updated_main_df.drop(
+        columns=[KEY_COLUMN, EMPTY_BRUTSS_COLUMN], errors="ignore"
+    ).copy()
 
     # Add 5 new columns: NEMPLOYEUR, ANREF, N, UNBRTRAV, OBSERV
     export_df.insert(0, "NEMPLOYEUR", "0840198947")
@@ -228,6 +276,11 @@ def create_output_excel(
         # Build Sheet 2 — Summary
         ws2 = wb.create_sheet(title="Résumé")
         build_summary_sheet(ws2, duplicates, stats)
+
+        # Build Sheet 3 — Empty BRUTSS (only if any were found)
+        if not empty_brutss_df.empty:
+            ws3 = wb.create_sheet(title="BRUTSS Vides")
+            _build_empty_brutss_sheet(ws3, empty_brutss_df)
 
     buffer.seek(0)
     return buffer.getvalue()

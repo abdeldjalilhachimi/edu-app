@@ -224,12 +224,6 @@ def validate_all_files(
     -------
     tuple (main_df, additional_dfs, additional_names, dropped_counts)
     """
-    if not additional_files and not include_internal_sheets:
-        raise ValueError(
-            "No additional files uploaded. "
-            "Please upload at least one additional .xlsx file."
-        )
-
     # Validate main file (first sheet)
     main_df = load_excel_safe(main_file, main_filename)
     main_df, dropped_main = drop_non_employee_rows(main_df)
@@ -265,11 +259,5 @@ def validate_all_files(
                 validate_required_columns(int_df, int_label)
                 additional_dfs.append(int_df)
                 additional_names.append(int_label)
-
-    if not additional_dfs:
-        raise ValueError(
-            "No additional data found. "
-            "Please upload additional files or enable internal sheets."
-        )
 
     return main_df, additional_dfs, additional_names, dropped_counts

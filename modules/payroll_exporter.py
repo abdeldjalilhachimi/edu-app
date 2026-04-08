@@ -219,18 +219,56 @@ def _build_summary_sheet(ws, stats: PayrollStats) -> None:
     _auto_column_widths(ws)
 
 
-def create_payroll_excel(result: PayrollOutput) -> bytes:
+def _build_empty_brutss_sheet(ws, empty_brutss: list) -> None:
+    """
+    Build a sheet listing employees whose BRUTSS was empty (set to 0).
+
+    Parameters
+    ----------
+    ws : openpyxl Worksheet
+    empty_brutss : list[tuple]
+        [(numcpt, nom, prenom), ...]
+    """
+    WARNING_FILL = PatternFill(start_color="F2DCDB", end_color="F2DCDB", fill_type="solid")
+
+    # Section header
+    ws.cell(row=1, column=1, value=f"EMPLOYÉS AVEC BRUTSS VIDE ({len(empty_brutss)} trouvé(s))")
+    ws.cell(row=1, column=1).font = SECTION_FONT
+    ws.cell(row=1, column=1).fill = SECTION_FILL
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
+
+    # Column headers
+    for col_idx, header in enumerate(["NUMCPT", "NOM", "PRENOM"], start=1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = WARNING_FILL
+        cell.alignment = Alignment(horizontal="center")
+
+    # Data rows
+    for row_idx, (numcpt, nom, prenom) in enumerate(empty_brutss, start=3):
+        ws.cell(row=row_idx, column=1, value=numcpt)
+        ws.cell(row=row_idx, column=1).number_format = "@"
+        ws.cell(row=row_idx, column=2, value=nom)
+        ws.cell(row=row_idx, column=3, value=prenom)
+
+    _auto_column_widths(ws)
+
+
+def create_payroll_excel(result: PayrollOutput, empty_brutss: list = None) -> bytes:
     """
     Build the 3-sheet output workbook for payroll calculation.
 
     Sheet 1 ("Titulaires"):      Confirmed employees with PARTSS 25%
     Sheet 2 ("Non Titulaires"):  Non-confirmed employees with PARTSS 12.5%
     Sheet 3 ("Résumé"):          Summary statistics
+    Sheet 4 ("BRUTSS Vides"):    Employees with empty BRUTSS (only if any)
 
     Parameters
     ----------
     result : PayrollOutput
         Output from calculate_payroll().
+    empty_brutss : list[tuple], optional
+        [(numcpt, nom, prenom), ...] for employees with empty BRUTSS.
 
     Returns
     -------
@@ -256,6 +294,11 @@ def create_payroll_excel(result: PayrollOutput) -> bytes:
         # Sheet 3 — Résumé
         ws3 = wb.create_sheet(title="Résumé")
         _build_summary_sheet(ws3, result.stats)
+
+        # Sheet 4 — Empty BRUTSS (only if any were found)
+        if empty_brutss:
+            ws4 = wb.create_sheet(title="BRUTSS Vides")
+            _build_empty_brutss_sheet(ws4, empty_brutss)
 
         # Remove the dummy sheet
         del wb["_tmp"]

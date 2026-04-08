@@ -8,8 +8,10 @@ No data manipulation occurs in this file.
 Tab 1: Multi-file merge (original feature)
 Tab 2: Trimestrial BRUTSS consolidation (3 monthly files → 1 output)
 Tab 3: Payroll calculation (RETSS / PARTSS / NETPAI)
+Tab 4: Annual declaration (4 trimestrial files → 1 annual output)
 """
 
+import os
 import streamlit as st
 import pandas as pd
 
@@ -26,6 +28,12 @@ from modules.trimestrial_types import filename_to_label
 from modules.payroll_parser import parse_payroll_file
 from modules.payroll_calculator import calculate_payroll
 from modules.payroll_exporter import create_payroll_excel, _format_french_payroll
+
+from modules.annual_parser import parse_quarterly_file
+from modules.annual_merger import merge_annual
+from modules.annual_exporter import create_annual_excel, _format_french_annual
+
+from modules.txt_converter import convert_xlsx_to_txt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page configuration
@@ -57,6 +65,16 @@ _SESSION_DEFAULTS = {
     "pay_error_message": None,
     "pay_processing_info": None,
     "processing_tab3": False,
+    # Tab 4
+    "ann_result_bytes": None,
+    "ann_error_message": None,
+    "ann_processing_info": None,
+    "processing_tab4": False,
+    # Tab 5
+    "txt_result_bytes": None,
+    "txt_error_message": None,
+    "txt_processing_info": None,
+    "processing_tab5": False,
 }
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
@@ -66,10 +84,12 @@ for _key, _default in _SESSION_DEFAULTS.items():
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Fusion Multi-Fichiers",
     "📅 Consolidation Trimestrielle",
     "💰 Calcul Paie (RETSS/PARTSS)",
+    "📋 Déclaration Annuelle",
+    "📄 Export TXT",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -144,15 +164,10 @@ with tab1:
 
     # ── Process button ───────────────────────────────────────────────────────
 
-    files_ready = main_file is not None and (bool(additional_files) or include_internal)
+    files_ready = main_file is not None
 
     if not files_ready:
-        missing = []
-        if main_file is None:
-            missing.append("fichier principal")
-        if not additional_files and not include_internal:
-            missing.append("fichier(s) additionnel(s)")
-        st.info(f"ℹ️ Veuillez téléverser le(s) {' et le(s) '.join(missing)} pour continuer.")
+        st.info("ℹ️ Veuillez téléverser le fichier principal pour continuer. Les fichiers additionnels sont optionnels.")
 
     process_clicked = st.button(
         "▶  Traiter les fichiers",
@@ -390,16 +405,30 @@ with tab2:
 
                 validate_trimestrial_files(file_m1, file_m2, file_m3)
 
-                month1 = parse_monthly_file(file_m1, file_m1.name)
-                month2 = parse_monthly_file(file_m2, file_m2.name)
-                month3 = parse_monthly_file(file_m3, file_m3.name)
+                month1, empty1 = parse_monthly_file(file_m1, file_m1.name)
+                month2, empty2 = parse_monthly_file(file_m2, file_m2.name)
+                month3, empty3 = parse_monthly_file(file_m3, file_m3.name)
 
                 trim_result = merge_trimestrial(
                     month1, month2, month3,
                     file_m1.name, file_m2.name, file_m3.name,
                 )
 
-                trim_bytes = create_trimestrial_excel(trim_result, anref_year=int(trim_anref_year))
+                # Collect empty-BRUTSS info per file (only non-empty lists)
+                empty_brutss_per_file = {}
+                for fname, emp_list in [
+                    (file_m1.name, empty1),
+                    (file_m2.name, empty2),
+                    (file_m3.name, empty3),
+                ]:
+                    if emp_list:
+                        empty_brutss_per_file[fname] = emp_list
+
+                trim_bytes = create_trimestrial_excel(
+                    trim_result,
+                    anref_year=int(trim_anref_year),
+                    empty_brutss_per_file=empty_brutss_per_file,
+                )
 
             # Store results in session state
             st.session_state["trim_result_bytes"] = trim_bytes
@@ -548,11 +577,11 @@ with tab3:
         try:
             with st.spinner("⏳ Calcul de la paie en cours…"):
 
-                employees = parse_payroll_file(pay_file, pay_file.name)
+                employees, pay_empty_brutss = parse_payroll_file(pay_file, pay_file.name)
 
                 pay_result = calculate_payroll(employees)
 
-                pay_bytes = create_payroll_excel(pay_result)
+                pay_bytes = create_payroll_excel(pay_result, empty_brutss=pay_empty_brutss)
 
             # Store results in session state
             st.session_state["pay_result_bytes"] = pay_bytes
@@ -620,6 +649,375 @@ with tab3:
             type="primary",
             use_container_width=False,
             key="download_tab3",
+        )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Annual declaration (4 trimestrial files)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab4:
+
+    st.markdown(
+        "Consolidez **4 fichiers trimestriels** en une seule **déclaration annuelle**. "
+        "Chaque fichier doit contenir la colonne **BRUTSS_TOTAL** (fichier de sortie de l'onglet Consolidation Trimestrielle). "
+        "Le résultat affiche le BRUTSS de chaque trimestre et le **total annuel** par employé."
+    )
+    st.divider()
+
+    # ── Upload section — 4 columns for 4 quarters ──────────────────────────
+
+    col_q1, col_q2 = st.columns(2)
+    col_q3, col_q4 = st.columns(2)
+
+    with col_q1:
+        st.subheader("📅 1er Trimestre")
+        st.caption("Fichier .xlsx avec colonne BRUTSS_TOTAL")
+        file_q1 = st.file_uploader(
+            label="1er Trimestre",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="ann_file_q1",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab4"],
+        )
+        if file_q1:
+            st.success(f"✅ {file_q1.name} ({file_q1.size / 1024:.1f} Ko)")
+
+    with col_q2:
+        st.subheader("📅 2ème Trimestre")
+        st.caption("Fichier .xlsx avec colonne BRUTSS_TOTAL")
+        file_q2 = st.file_uploader(
+            label="2ème Trimestre",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="ann_file_q2",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab4"],
+        )
+        if file_q2:
+            st.success(f"✅ {file_q2.name} ({file_q2.size / 1024:.1f} Ko)")
+
+    with col_q3:
+        st.subheader("📅 3ème Trimestre")
+        st.caption("Fichier .xlsx avec colonne BRUTSS_TOTAL")
+        file_q3 = st.file_uploader(
+            label="3ème Trimestre",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="ann_file_q3",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab4"],
+        )
+        if file_q3:
+            st.success(f"✅ {file_q3.name} ({file_q3.size / 1024:.1f} Ko)")
+
+    with col_q4:
+        st.subheader("📅 4ème Trimestre")
+        st.caption("Fichier .xlsx avec colonne BRUTSS_TOTAL")
+        file_q4 = st.file_uploader(
+            label="4ème Trimestre",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="ann_file_q4",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab4"],
+        )
+        if file_q4:
+            st.success(f"✅ {file_q4.name} ({file_q4.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    ann_anref_year = st.number_input(
+        "📅 ANREF (année de référence)",
+        min_value=2020,
+        max_value=2099,
+        value=2025,
+        step=1,
+        disabled=st.session_state["processing_tab4"],
+        key="ann_anref_year",
+    )
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    ann_ready = all(f is not None for f in [file_q1, file_q2, file_q3, file_q4])
+
+    if not ann_ready:
+        missing = []
+        if file_q1 is None:
+            missing.append("1er Trimestre")
+        if file_q2 is None:
+            missing.append("2ème Trimestre")
+        if file_q3 is None:
+            missing.append("3ème Trimestre")
+        if file_q4 is None:
+            missing.append("4ème Trimestre")
+        st.info(f"ℹ️ Veuillez téléverser le(s) fichier(s) manquant(s) : {', '.join(missing)}.")
+
+    ann_clicked = st.button(
+        "▶  Générer la déclaration annuelle",
+        type="primary",
+        disabled=not ann_ready or st.session_state["processing_tab4"],
+        use_container_width=False,
+        key="btn_tab4",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun
+    if ann_clicked and ann_ready:
+        st.session_state["ann_result_bytes"] = None
+        st.session_state["ann_error_message"] = None
+        st.session_state["ann_processing_info"] = None
+        st.session_state["processing_tab4"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → widgets are disabled, now run pipeline
+    if st.session_state["processing_tab4"] and all(
+        f is not None for f in [file_q1, file_q2, file_q3, file_q4]
+    ):
+        try:
+            with st.spinner("⏳ Génération de la déclaration annuelle en cours…"):
+
+                q1_data, empty_q1 = parse_quarterly_file(file_q1, file_q1.name)
+                q2_data, empty_q2 = parse_quarterly_file(file_q2, file_q2.name)
+                q3_data, empty_q3 = parse_quarterly_file(file_q3, file_q3.name)
+                q4_data, empty_q4 = parse_quarterly_file(file_q4, file_q4.name)
+
+                ann_result = merge_annual(
+                    q1_data, q2_data, q3_data, q4_data,
+                    file_q1.name, file_q2.name, file_q3.name, file_q4.name,
+                )
+
+                # Collect empty-BRUTSS info per file
+                ann_empty_brutss = {}
+                for fname, emp_list in [
+                    (file_q1.name, empty_q1),
+                    (file_q2.name, empty_q2),
+                    (file_q3.name, empty_q3),
+                    (file_q4.name, empty_q4),
+                ]:
+                    if emp_list:
+                        ann_empty_brutss[fname] = emp_list
+
+                ann_bytes = create_annual_excel(
+                    ann_result,
+                    anref_year=int(ann_anref_year),
+                    empty_brutss_per_file=ann_empty_brutss,
+                )
+
+            # Store results
+            st.session_state["ann_result_bytes"] = ann_bytes
+            st.session_state["ann_processing_info"] = {
+                "unique_count": ann_result.stats.unique_count,
+                "file_labels": ann_result.stats.file_labels,
+                "quarterly_totals_cents": ann_result.stats.quarterly_totals_cents,
+                "grand_total_cents": ann_result.stats.grand_total_cents,
+                "missing_per_file": [
+                    [(e.numcpt_raw, e.nom, e.prenom) for e in missing_list]
+                    for missing_list in ann_result.missing_per_file
+                ],
+            }
+
+        except ValueError as e:
+            st.session_state["ann_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab4"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["ann_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["ann_error_message"], language=None)
+        st.caption("Corrigez le problème dans le fichier source et re-téléversez.")
+
+    if st.session_state["ann_result_bytes"]:
+        st.divider()
+        info = st.session_state["ann_processing_info"]
+
+        st.success(
+            f"✅ Déclaration annuelle générée — "
+            f"{info['unique_count']} employé(s) unique(s) consolidé(s)."
+        )
+
+        # Summary metrics
+        file_labels = info["file_labels"]
+        quarterly_totals = info["quarterly_totals_cents"]
+
+        metric_cols = st.columns(2 + len(file_labels))
+        with metric_cols[0]:
+            st.metric("Employés uniques", info["unique_count"])
+        for i, (label, total_cents) in enumerate(zip(file_labels, quarterly_totals)):
+            with metric_cols[1 + i]:
+                st.metric(f"Total {label}", _format_french_annual(total_cents))
+        with metric_cols[-1]:
+            st.metric("Total Annuel", _format_french_annual(info["grand_total_cents"]))
+
+        st.download_button(
+            label="⬇  Télécharger la déclaration annuelle (annuel.xlsx)",
+            data=st.session_state["ann_result_bytes"],
+            file_name="annuel.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+            key="download_tab4",
+        )
+
+        # Absences detection
+        missing_per_file = info["missing_per_file"]
+        total_missing = sum(len(m) for m in missing_per_file)
+
+        if total_missing > 0:
+            st.divider()
+            st.subheader("🔍 Détection des absences")
+            st.caption(
+                "Employés présents dans au moins un trimestre mais absents d'un autre. "
+                "Le détail complet est aussi disponible dans l'onglet « Absences » du fichier Excel."
+            )
+
+            for label, missing_list in zip(file_labels, missing_per_file):
+                count = len(missing_list)
+                if count == 0:
+                    st.success(f"✅ **{label}** — Aucun absent")
+                else:
+                    with st.expander(f"⚠️ **{label}** — {count} employé(s) absent(s)", expanded=False):
+                        missing_df = pd.DataFrame(
+                            missing_list,
+                            columns=["NUMCPT", "NOM", "PRENOM"],
+                        )
+                        missing_df.index = missing_df.index + 1
+                        st.dataframe(missing_df, use_container_width=True, hide_index=False)
+        else:
+            st.divider()
+            st.success("✅ Aucune absence détectée — tous les employés sont présents dans les 4 trimestres.")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Export TXT (annual xlsx → pipe-delimited txt)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab5:
+
+    st.markdown(
+        "Convertissez un fichier de **déclaration annuelle** (.xlsx) en fichier texte (.txt). "
+        "Les colonnes trimestrielles (BRUTSS par trimestre) sont supprimées — seul le **total annuel** "
+        "(BRUTSS_ANNUEL) est conservé avec toutes les autres colonnes. "
+        "Format de sortie : délimité par **|** (pipe), encodage UTF-8."
+    )
+    st.divider()
+
+    # ── Upload section ───────────────────────────────────────────────────────
+
+    st.subheader("📁 Fichier de déclaration annuelle")
+    st.caption("Un fichier .xlsx contenant la colonne BRUTSS_ANNUEL (fichier de sortie de l'onglet Déclaration Annuelle)")
+    txt_file = st.file_uploader(
+        label="Fichier annuel",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="txt_file_uploader",
+        label_visibility="collapsed",
+        disabled=st.session_state["processing_tab5"],
+    )
+    if txt_file:
+        st.success(f"✅ {txt_file.name} ({txt_file.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    txt_ready = txt_file is not None
+
+    if not txt_ready:
+        st.info("ℹ️ Veuillez téléverser un fichier de déclaration annuelle pour continuer.")
+
+    txt_clicked = st.button(
+        "▶  Convertir en TXT",
+        type="primary",
+        disabled=not txt_ready or st.session_state["processing_tab5"],
+        use_container_width=False,
+        key="btn_tab5",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun
+    if txt_clicked and txt_ready:
+        st.session_state["txt_result_bytes"] = None
+        st.session_state["txt_error_message"] = None
+        st.session_state["txt_processing_info"] = None
+        st.session_state["processing_tab5"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → run pipeline
+    if st.session_state["processing_tab5"] and txt_file is not None:
+        try:
+            with st.spinner("⏳ Conversion en cours…"):
+
+                txt_bytes, txt_info = convert_xlsx_to_txt(txt_file, txt_file.name)
+
+            st.session_state["txt_result_bytes"] = txt_bytes
+            st.session_state["txt_processing_info"] = txt_info
+
+        except ValueError as e:
+            st.session_state["txt_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab5"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["txt_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["txt_error_message"], language=None)
+        st.caption("Corrigez le problème dans le fichier source et re-téléversez.")
+
+    if st.session_state["txt_result_bytes"]:
+        st.divider()
+        info = st.session_state["txt_processing_info"]
+
+        st.success(
+            f"✅ Conversion terminée — "
+            f"{info['total_rows']} ligne(s), {info['columns_kept']} colonne(s) conservée(s)."
+        )
+
+        if info["columns_dropped_count"] > 0:
+            st.info(
+                f"ℹ️ {info['columns_dropped_count']} colonne(s) trimestrielle(s) supprimée(s) : "
+                f"{', '.join(info['columns_dropped'])}"
+            )
+
+        # Summary metrics
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Lignes", info["total_rows"])
+        with col_b:
+            st.metric("Colonnes conservées", info["columns_kept"])
+        with col_c:
+            st.metric("Colonnes supprimées", info["columns_dropped_count"])
+
+        # Preview
+        preview_text = st.session_state["txt_result_bytes"].decode("utf-8")
+        preview_lines = preview_text.strip().split("\n")
+        if len(preview_lines) > 6:
+            preview_display = "\n".join(preview_lines[:6]) + f"\n... ({len(preview_lines) - 6} lignes supplémentaires)"
+        else:
+            preview_display = preview_text.strip()
+
+        st.subheader("👁 Aperçu du fichier TXT")
+        st.code(preview_display, language=None)
+
+        # Generate output filename from input
+        txt_output_name = os.path.splitext(txt_file.name)[0] + ".txt"
+
+        st.download_button(
+            label=f"⬇  Télécharger ({txt_output_name})",
+            data=st.session_state["txt_result_bytes"],
+            file_name=txt_output_name,
+            mime="text/plain",
+            type="primary",
+            use_container_width=False,
+            key="download_tab5",
         )
 
 # ─────────────────────────────────────────────────────────────────────────────

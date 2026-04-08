@@ -21,6 +21,7 @@ from modules.validator import (
 from modules.cleaner import (
     convert_brutss_column,
     _normalize_numcpt,
+    EMPTY_BRUTSS_COLUMN,
 )
 from modules.trimestrial_types import EmployeeKey, MonthlyEntry
 
@@ -67,7 +68,7 @@ def _build_employee_key(normalized_numcpt: str) -> EmployeeKey:
     return EmployeeKey(numcpt=normalized_numcpt)
 
 
-def parse_monthly_file(file_obj, filename: str) -> dict:
+def parse_monthly_file(file_obj, filename: str) -> tuple:
     """
     Load, validate, and parse a single monthly Excel file.
 
@@ -92,8 +93,9 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
 
     Returns
     -------
-    dict[EmployeeKey, MonthlyEntry]
-        One entry per unique employee. BRUTSS is in integer cents.
+    tuple[dict[EmployeeKey, MonthlyEntry], list[tuple]]
+        - lookup: One entry per unique employee. BRUTSS is in integer cents.
+        - empty_brutss: List of (numcpt, nom, prenom) for employees with empty BRUTSS.
 
     Raises
     ------
@@ -113,6 +115,19 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
     # Step 4: Convert BRUTSS to float64
     df = convert_brutss_column(df, filename)
 
+    # Extract empty-BRUTSS employees before further processing
+    empty_brutss = []
+    if EMPTY_BRUTSS_COLUMN in df.columns:
+        empty_mask = df[EMPTY_BRUTSS_COLUMN] == True
+        if empty_mask.any():
+            for _, row in df[empty_mask].iterrows():
+                empty_brutss.append((
+                    str(row.get("NUMCPT", "")).strip(),
+                    str(row.get("NOM", "")).strip(),
+                    str(row.get("PRENOM", "")).strip(),
+                ))
+        df = df.drop(columns=[EMPTY_BRUTSS_COLUMN])
+
     # Step 5: Normalize NUMCPT
     df["_NUMCPT_NORM"] = _normalize_numcpt(df["NUMCPT"])
 
@@ -123,16 +138,16 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
     df = df[valid_mask]
 
     if df.empty:
-        return {}
+        return {}, empty_brutss
 
     # Vectorized cleanup: identity columns
     df["NUMCPT"] = df["NUMCPT"].astype(str).str.strip()
     df["NOM"] = df["NOM"].astype(str).str.strip()
     df["PRENOM"] = df["PRENOM"].astype(str).str.strip()
 
-    # Vectorized cleanup: optional columns — fillna + strip + replace nan/None
-    _OPT_COLS = ["NUMSS", "ADM", "DATNAIS", "NBRTRAV", "DATENT", "DATSOR"]
-    for col_name in _OPT_COLS:
+    # Vectorized cleanup: optional string columns — fillna + strip + replace nan/None
+    _OPT_STR_COLS = ["NUMSS", "ADM", "DATNAIS", "DATENT", "DATSOR"]
+    for col_name in _OPT_STR_COLS:
         if col_name in df.columns:
             df[col_name] = (
                 df[col_name].fillna("").astype(str).str.strip()
@@ -141,9 +156,16 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
         else:
             df[col_name] = ""
 
-    # Group by normalized NUMCPT: sum BRUTSS, keep first row for identity
+    # NBRTRAV: convert to numeric (integer days worked) — will be summed per employee
+    if "NBRTRAV" in df.columns:
+        df["NBRTRAV"] = pd.to_numeric(df["NBRTRAV"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["NBRTRAV"] = 0
+
+    # Group by normalized NUMCPT: sum BRUTSS + NBRTRAV, keep first row for identity
     group_key = "_NUMCPT_NORM"
     brutss_sums = df.groupby(group_key)[BRUTSS_COLUMN].sum()
+    nbrtrav_sums = df.groupby(group_key)["NBRTRAV"].sum()
     first_rows = df.groupby(group_key).first()
 
     # Build lookup dict from grouped result (iterating over small deduplicated set)
@@ -159,13 +181,13 @@ def parse_monthly_file(file_obj, filename: str) -> dict:
             numss=row.get("NUMSS", ""),
             adm=row.get("ADM", ""),
             datnais=row.get("DATNAIS", ""),
-            nbrtrav=row.get("NBRTRAV", ""),
+            nbrtrav=int(nbrtrav_sums[norm_numcpt]),
             datent=row.get("DATENT", ""),
             datsor=row.get("DATSOR", ""),
             brutss_cents=brutss_cents,
         )
 
-    return lookup
+    return lookup, empty_brutss
 
 
 def validate_trimestrial_files(file1, file2, file3) -> None:

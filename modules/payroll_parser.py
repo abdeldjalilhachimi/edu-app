@@ -20,6 +20,7 @@ from modules.cleaner import (
     convert_brutss_column,
     detect_and_clean_number_string,
     _normalize_numcpt,
+    EMPTY_BRUTSS_COLUMN,
 )
 from modules.payroll_types import PayrollEmployee
 
@@ -53,20 +54,9 @@ def _convert_netpai_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
     # ── Fast path: column is already numeric ────────────────────────────
     if pd.api.types.is_numeric_dtype(col):
-        if col.isna().any():
-            na_indices = col.index[col.isna()].tolist()
-            errors = [
-                f"  Row {idx + 2} (index {idx}): empty/null value"
-                for idx in na_indices
-            ]
-            raise ValueError(
-                f"File '{filename}': Failed to convert NETPAI values to numbers.\n"
-                f"The following rows have invalid values:\n"
-                + "\n".join(errors)
-                + "\nPlease fix the source file and re-upload."
-            )
         result_df = df.copy()
-        result_df[col_name] = col.astype("float64")
+        # Empty/NaN NETPAI → 0
+        result_df[col_name] = col.fillna(0.0).astype("float64")
         return result_df
 
     # ── Slow path: mixed types ──────────────────────────────────────────
@@ -77,15 +67,18 @@ def _convert_netpai_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     errors = []
     result_series = numeric_attempt.copy()
 
-    if orig_na_mask.any():
-        for idx in col.index[orig_na_mask]:
-            errors.append(f"  Row {idx + 2} (index {idx}): empty/null value")
+    # Empty/NaN NETPAI → 0
+    result_series[orig_na_mask] = 0.0
 
     if needs_cleaning.any():
         for idx in col.index[needs_cleaning]:
             raw_value = col.iloc[idx] if isinstance(col.index, pd.RangeIndex) else col.loc[idx]
+            raw_str = str(raw_value).strip()
+            if raw_str == "" or raw_str.lower() == "nan":
+                result_series.iat[col.index.get_loc(idx)] = 0.0
+                continue
             try:
-                cleaned = detect_and_clean_number_string(str(raw_value))
+                cleaned = detect_and_clean_number_string(raw_str)
                 result_series.iat[col.index.get_loc(idx)] = float(cleaned)
             except ValueError as e:
                 errors.append(f"  Row {idx + 2} (index {idx}): '{raw_value}' → {e}")
@@ -100,7 +93,7 @@ def _convert_netpai_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         )
 
     result_df = df.copy()
-    result_df[col_name] = result_series.astype("float64")
+    result_df[col_name] = result_series.fillna(0.0).astype("float64")
     return result_df
 
 
@@ -122,7 +115,7 @@ def _validate_payroll_columns(df: pd.DataFrame, filename: str) -> None:
         )
 
 
-def parse_payroll_file(file_obj, filename: str) -> list:
+def parse_payroll_file(file_obj, filename: str) -> tuple:
     """
     Load, validate, and parse a single Excel file for payroll calculation.
 
@@ -144,8 +137,9 @@ def parse_payroll_file(file_obj, filename: str) -> list:
 
     Returns
     -------
-    list[PayrollEmployee]
-        One entry per unique employee. Values in integer cents.
+    tuple[list[PayrollEmployee], list[tuple]]
+        - employees: One entry per unique employee. Values in integer cents.
+        - empty_brutss: List of (numcpt, nom, prenom) for employees with empty BRUTSS.
     """
     # Step 1: Load
     df = load_excel_safe(file_obj, filename)
@@ -159,6 +153,20 @@ def parse_payroll_file(file_obj, filename: str) -> list:
 
     # Step 4: Convert BRUTSS and NETPAI to float64
     df = convert_brutss_column(df, filename)
+
+    # Extract empty-BRUTSS employees before further processing
+    empty_brutss = []
+    if EMPTY_BRUTSS_COLUMN in df.columns:
+        empty_mask = df[EMPTY_BRUTSS_COLUMN] == True
+        if empty_mask.any():
+            for _, row in df[empty_mask].iterrows():
+                empty_brutss.append((
+                    str(row.get("NUMCPT", "")).strip(),
+                    str(row.get("NOM", "")).strip(),
+                    str(row.get("PRENOM", "")).strip(),
+                ))
+        df = df.drop(columns=[EMPTY_BRUTSS_COLUMN])
+
     df = _convert_netpai_column(df, filename)
 
     # Step 5: Normalize NUMCPT
@@ -171,7 +179,7 @@ def parse_payroll_file(file_obj, filename: str) -> list:
     df = df[valid_mask]
 
     if df.empty:
-        return []
+        return [], empty_brutss
 
     # Vectorized cleanup of identity columns
     df["NUMCPT"] = df["NUMCPT"].astype(str).str.strip()
@@ -195,4 +203,4 @@ def parse_payroll_file(file_obj, filename: str) -> list:
             netpai_cents=_float_to_cents(float(sums.at[norm, "NETPAI"])),
         ))
 
-    return employees
+    return employees, empty_brutss

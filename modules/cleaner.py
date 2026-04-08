@@ -13,6 +13,7 @@ from typing import Union
 
 BRUTSS_COLUMN = "BRUTSS"
 KEY_COLUMN = "_KEY"
+EMPTY_BRUTSS_COLUMN = "_BRUTSS_WAS_EMPTY"
 
 
 def detect_and_clean_number_string(raw: str) -> str:
@@ -117,7 +118,7 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
     - Already-numeric cells (int, float) are passed through unchanged.
     - String cells go through detect_and_clean_number_string().
-    - NaN / None values are treated as hard errors (no silent failures).
+    - NaN / None / empty values are treated as 0 (zero BRUTSS).
     - ALL conversion failures are collected before raising, so the user
       sees every problematic row at once rather than stopping at row 1.
 
@@ -142,31 +143,21 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
     # ── Fast path: column is already numeric (int/float dtype) ──────────
     if pd.api.types.is_numeric_dtype(col):
-        if col.isna().any():
-            na_indices = col.index[col.isna()].tolist()
-            errors = [
-                f"  Row {idx + 2} (index {idx}): empty/null value"
-                for idx in na_indices
-            ]
-            raise ValueError(
-                f"File '{filename}': Failed to convert BRUTSS values to numbers.\n"
-                f"The following rows have invalid values:\n"
-                + "\n".join(errors)
-                + "\nPlease fix the source file and re-upload."
-            )
+        empty_mask = col.isna()
         result_df = df.copy()
-        result_df[BRUTSS_COLUMN] = col.astype("float64")
+        result_df[BRUTSS_COLUMN] = col.fillna(0.0).astype("float64")
+        result_df[EMPTY_BRUTSS_COLUMN] = empty_mask
         return result_df
 
     # ── Slow path: mixed types — separate numeric from string values ────
     # Try pd.to_numeric first; values that fail become NaN
     numeric_attempt = pd.to_numeric(col, errors="coerce")
 
-    # Identify originally-NaN values (hard error)
+    # Identify originally-NaN values → treat as 0
     orig_na_mask = col.isna()
 
-    # Identify values that were successfully converted
-    converted_mask = numeric_attempt.notna() & ~orig_na_mask
+    # Track all empty BRUTSS positions
+    empty_mask = orig_na_mask.copy()
 
     # Identify string values that need cleaning (not NaN originally, but failed numeric)
     needs_cleaning = numeric_attempt.isna() & ~orig_na_mask
@@ -174,17 +165,21 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     errors = []
     result_series = numeric_attempt.copy()
 
-    # Report originally-NaN values as errors
-    if orig_na_mask.any():
-        for idx in col.index[orig_na_mask]:
-            errors.append(f"  Row {idx + 2} (index {idx}): empty/null value")
+    # Empty/NaN BRUTSS → 0
+    result_series[orig_na_mask] = 0.0
 
     # Clean string values that couldn't be converted directly
     if needs_cleaning.any():
         for idx in col.index[needs_cleaning]:
             raw_value = col.iloc[idx] if isinstance(col.index, pd.RangeIndex) else col.loc[idx]
+            # Empty strings → 0
+            raw_str = str(raw_value).strip()
+            if raw_str == "" or raw_str.lower() == "nan":
+                result_series.iat[col.index.get_loc(idx)] = 0.0
+                empty_mask.iat[col.index.get_loc(idx)] = True
+                continue
             try:
-                cleaned = detect_and_clean_number_string(str(raw_value))
+                cleaned = detect_and_clean_number_string(raw_str)
                 result_series.iat[col.index.get_loc(idx)] = float(cleaned)
             except ValueError as e:
                 errors.append(f"  Row {idx + 2} (index {idx}): '{raw_value}' → {e}")
@@ -199,7 +194,8 @@ def convert_brutss_column(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         )
 
     result_df = df.copy()
-    result_df[BRUTSS_COLUMN] = result_series.astype("float64")
+    result_df[BRUTSS_COLUMN] = result_series.fillna(0.0).astype("float64")
+    result_df[EMPTY_BRUTSS_COLUMN] = empty_mask
     return result_df
 
 
