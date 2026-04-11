@@ -8,3 +8,4 @@ venv/
 *.xls
 .DS_Store
 .claude/
+data/license.json

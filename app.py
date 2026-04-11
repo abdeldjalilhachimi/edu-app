@@ -35,6 +35,16 @@ from modules.annual_exporter import create_annual_excel, _format_french_annual
 
 from modules.txt_converter import convert_xlsx_to_txt
 
+from modules.demo_guard import (
+    is_demo_expired,
+    is_unlocked,
+    get_remaining_downloads,
+    increment_downloads,
+    try_activate,
+    CONTACT_EMAIL,
+    MAX_FREE_DOWNLOADS,
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Page configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,6 +89,60 @@ _SESSION_DEFAULTS = {
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
         st.session_state[_key] = _default
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Demo protection — activation dialog
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.dialog("Activation requise")
+def _show_activation_dialog():
+    """Blocking modal shown when the demo period has expired."""
+    st.markdown("### :lock: Version d'essai terminée")
+    st.markdown(
+        f"Vous avez utilisé vos **{MAX_FREE_DOWNLOADS} téléchargements gratuits**."
+    )
+    st.divider()
+    st.markdown("Entrez le code d'activation pour débloquer l'application :")
+
+    code = st.text_input(
+        "Code d'activation",
+        type="password",
+        placeholder="Entrez le code ici...",
+        key="activation_code_input",
+    )
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("Activer", type="primary", use_container_width=True):
+            if code and try_activate(code):
+                st.balloons()
+                st.success("Application activée avec succès !")
+                st.rerun()
+            else:
+                st.error("Code incorrect. Veuillez réessayer.")
+
+    st.divider()
+    st.markdown(
+        f"Pour obtenir le code d'activation, contactez :\n\n"
+        f"**:envelope: {CONTACT_EMAIL}**"
+    )
+
+
+# ── Gate: block the app if demo expired ─────────────────────────────────────
+
+if is_demo_expired():
+    _show_activation_dialog()
+    st.stop()
+
+# ── Demo badge: show remaining downloads (only in demo mode) ────────────────
+
+if not is_unlocked():
+    _remaining = get_remaining_downloads()
+    st.info(
+        f":hourglass_flowing_sand: **Version d'essai** — "
+        f"{_remaining}/{MAX_FREE_DOWNLOADS} téléchargement(s) restant(s)",
+        icon="ℹ️",
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tabs
@@ -291,6 +355,7 @@ with tab1:
             type="primary",
             use_container_width=False,
             key="download_tab1",
+            on_click=increment_downloads,
         )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -486,6 +551,7 @@ with tab2:
             type="primary",
             use_container_width=False,
             key="download_tab2",
+            on_click=increment_downloads,
         )
 
         # ── Absences detection — employees missing per file ──────────────
@@ -649,6 +715,7 @@ with tab3:
             type="primary",
             use_container_width=False,
             key="download_tab3",
+            on_click=increment_downloads,
         )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -863,6 +930,7 @@ with tab4:
             type="primary",
             use_container_width=False,
             key="download_tab4",
+            on_click=increment_downloads,
         )
 
         # Absences detection
@@ -1018,6 +1086,7 @@ with tab5:
             type="primary",
             use_container_width=False,
             key="download_tab5",
+            on_click=increment_downloads,
         )
 
 # ─────────────────────────────────────────────────────────────────────────────
