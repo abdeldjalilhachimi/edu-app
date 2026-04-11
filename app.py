@@ -39,10 +39,13 @@ from modules.demo_guard import (
     is_demo_expired,
     is_unlocked,
     get_remaining_downloads,
+    get_trial_days_remaining,
+    get_lock_reason,
     increment_downloads,
     try_activate,
     CONTACT_EMAIL,
     MAX_FREE_DOWNLOADS,
+    TRIAL_DAYS,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,12 +100,21 @@ for _key, _default in _SESSION_DEFAULTS.items():
 @st.dialog("Activation requise")
 def _show_activation_dialog():
     """Blocking modal shown when the demo period has expired."""
-    st.markdown("### :lock: Version d'essai terminée")
-    st.markdown(
-        f"Vous avez utilisé vos **{MAX_FREE_DOWNLOADS} téléchargements gratuits**."
-    )
+    reason = get_lock_reason()
+
+    if reason == "trial_expired":
+        st.markdown("### :lock: Période d'essai expirée")
+        st.markdown(
+            f"Votre essai de **{TRIAL_DAYS} jours** est terminé."
+        )
+    else:
+        st.markdown("### :lock: Version d'essai terminée")
+        st.markdown(
+            f"Vous avez utilisé vos **{MAX_FREE_DOWNLOADS} téléchargements gratuits**."
+        )
+
     st.divider()
-    st.markdown("Entrez le code d'activation pour débloquer l'application :")
+    st.markdown("Entrez un code d'activation pour continuer :")
 
     code = st.text_input(
         "Code d'activation",
@@ -114,16 +126,21 @@ def _show_activation_dialog():
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("Activer", type="primary", use_container_width=True):
-            if code and try_activate(code):
+            result = try_activate(code) if code else ""
+            if result == "permanent":
                 st.balloons()
-                st.success("Application activée avec succès !")
+                st.success("Application activée définitivement !")
+                st.rerun()
+            elif result == "trial":
+                st.balloons()
+                st.success(f"Essai de {TRIAL_DAYS} jours activé !")
                 st.rerun()
             else:
                 st.error("Code incorrect. Veuillez réessayer.")
 
     st.divider()
     st.markdown(
-        f"Pour obtenir le code d'activation, contactez :\n\n"
+        f"Pour obtenir un code d'activation, contactez :\n\n"
         f"**:envelope: {CONTACT_EMAIL}**"
     )
 
@@ -134,9 +151,18 @@ if is_demo_expired():
     _show_activation_dialog()
     st.stop()
 
-# ── Demo badge: show remaining downloads (only in demo mode) ────────────────
+# ── Status badge (only when not permanently unlocked) ───────────────────────
 
-if not is_unlocked():
+_trial_days = get_trial_days_remaining()
+if _trial_days is not None:
+    # Active trial — show days remaining
+    st.info(
+        f":calendar: **Essai actif** — "
+        f"{_trial_days} jour(s) restant(s) sur {TRIAL_DAYS}",
+        icon="ℹ️",
+    )
+elif not is_unlocked():
+    # Demo mode — show downloads remaining
     _remaining = get_remaining_downloads()
     st.info(
         f":hourglass_flowing_sand: **Version d'essai** — "
