@@ -13,7 +13,6 @@ This avoids the "We found a problem with some content" Excel repair warning.
 
 import io
 import pandas as pd
-import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -28,9 +27,13 @@ SECTION_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="
 GRAND_TOTAL_FONT = Font(bold=True)
 GRAND_TOTAL_FILL = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
 
-# Internal key column — excluded from all output
+# Internal columns — excluded from all output
 KEY_COLUMN = "_KEY"
 BRUTSS_COLUMN = "BRUTSS"
+EMPTY_BRUTSS_COLUMN = "_BRUTSS_WAS_EMPTY"
+
+# Styling for empty-BRUTSS warning sheet
+WARNING_HEADER_FILL = PatternFill(start_color="F2DCDB", end_color="F2DCDB", fill_type="solid")
 
 
 def _auto_column_widths(ws) -> None:
@@ -160,10 +163,46 @@ def build_summary_sheet(
     _auto_column_widths(ws)
 
 
+def _build_empty_brutss_sheet(ws, empty_rows: pd.DataFrame) -> None:
+    """
+    Build a sheet listing employees whose BRUTSS was empty (set to 0).
+
+    Parameters
+    ----------
+    ws : openpyxl Worksheet
+    empty_rows : pd.DataFrame
+        Rows where BRUTSS was originally empty. Must have NUMCPT, NOM, PRENOM.
+    """
+    headers = ["NUMCPT", "NOM", "PRENOM"]
+
+    # Section header
+    ws.cell(row=1, column=1, value=f"EMPLOYÉS AVEC BRUTSS VIDE ({len(empty_rows)} trouvé(s))")
+    ws.cell(row=1, column=1).font = SECTION_FONT
+    ws.cell(row=1, column=1).fill = SECTION_FILL
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+
+    # Column headers
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = WARNING_HEADER_FILL
+        cell.alignment = Alignment(horizontal="center")
+
+    # Data rows
+    for row_idx, (_, row) in enumerate(empty_rows.iterrows(), start=3):
+        ws.cell(row=row_idx, column=1, value=str(row.get("NUMCPT", "")).strip())
+        ws.cell(row=row_idx, column=1).number_format = "@"
+        ws.cell(row=row_idx, column=2, value=str(row.get("NOM", "")).strip())
+        ws.cell(row=row_idx, column=3, value=str(row.get("PRENOM", "")).strip())
+
+    _auto_column_widths(ws)
+
+
 def create_output_excel(
     updated_main_df: pd.DataFrame,
     duplicates: list,
     stats: dict,
+    anref_year: int = 2025,
 ) -> bytes:
     """
     Assemble the two-sheet output workbook and return as bytes.
@@ -173,58 +212,75 @@ def create_output_excel(
     """
     buffer = io.BytesIO()
 
-    # ── Step 1: Write data with pandas (safe type handling) ──────────────────
+    # Extract empty-BRUTSS rows before dropping internal columns
+    empty_brutss_df = pd.DataFrame()
+    if EMPTY_BRUTSS_COLUMN in updated_main_df.columns:
+        mask = updated_main_df[EMPTY_BRUTSS_COLUMN] == True
+        if mask.any():
+            empty_brutss_df = updated_main_df.loc[mask, ["NUMCPT", "NOM", "PRENOM"]].copy()
 
-    # Prepare export DataFrame: drop _KEY, keep all other columns
-    export_df = updated_main_df.drop(columns=[KEY_COLUMN], errors="ignore").copy()
+    # Prepare export DataFrame: drop internal columns
+    export_df = updated_main_df.drop(
+        columns=[KEY_COLUMN, EMPTY_BRUTSS_COLUMN], errors="ignore"
+    ).copy()
 
-    # Force large-number ID columns to string so they never become
-    # scientific notation in Excel (e.g. 790249002944 → "7,90249E+11")
-    TEXT_COLUMNS = ["NUMCPT", "NUMSS", "NUMMUT", "MATRI"]
+    # Add 5 new columns: NEMPLOYEUR, ANREF, N, UNBRTRAV, OBSERV
+    export_df.insert(0, "NEMPLOYEUR", "0840198947")
+    export_df.insert(1, "ANREF", int(anref_year))
+    export_df.insert(2, "N", range(1, len(export_df) + 1))
+    export_df["UNBRTRAV"] = "J"
+    export_df["OBSERV"] = ""
+
+    # Force large-number ID columns to string (vectorized chain)
+    TEXT_COLUMNS = {"NUMCPT", "NUMSS", "NUMMUT", "MATRI", "NEMPLOYEUR"}
     for col in TEXT_COLUMNS:
         if col in export_df.columns:
-            export_df[col] = export_df[col].astype(str).str.strip()
-            # Clean "nan" strings from NaN values
-            export_df[col] = export_df[col].replace("nan", "")
+            export_df[col] = (
+                export_df[col].astype(str).str.strip().replace("nan", "")
+            )
+
+    # ── Single-save: write data + format + Sheet 2 in one pass ──────────────
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         export_df.to_excel(writer, sheet_name="Résultat", index=False)
 
-    # ── Step 2: Open with openpyxl to apply formatting + add Sheet 2 ────────
+        wb = writer.book
+        ws1 = wb["Résultat"]
+
+        # Style header row
+        _style_header_row(ws1, ws1.max_column)
+
+        # Pre-compute column roles for single-pass formatting
+        brutss_cols = set()
+        text_cols = set()
+        for col_idx in range(1, ws1.max_column + 1):
+            header = ws1.cell(row=1, column=col_idx).value
+            if header == BRUTSS_COLUMN:
+                brutss_cols.add(col_idx)
+            elif header in ("NUMCPT", "NUMSS", "NUMMUT", "MATRI"):
+                text_cols.add(col_idx)
+
+        # Single pass over all data cells
+        right_align = Alignment(horizontal="right")
+        if brutss_cols or text_cols:
+            for row_idx in range(2, ws1.max_row + 1):
+                for col_idx in brutss_cols:
+                    cell = ws1.cell(row=row_idx, column=col_idx)
+                    cell.number_format = FRENCH_NUMBER_FORMAT
+                    cell.alignment = right_align
+                for col_idx in text_cols:
+                    ws1.cell(row=row_idx, column=col_idx).number_format = "@"
+
+        _auto_column_widths(ws1)
+
+        # Build Sheet 2 — Summary
+        ws2 = wb.create_sheet(title="Résumé")
+        build_summary_sheet(ws2, duplicates, stats)
+
+        # Build Sheet 3 — Empty BRUTSS (only if any were found)
+        if not empty_brutss_df.empty:
+            ws3 = wb.create_sheet(title="BRUTSS Vides")
+            _build_empty_brutss_sheet(ws3, empty_brutss_df)
 
     buffer.seek(0)
-    wb = openpyxl.load_workbook(buffer)
-
-    # Style Sheet 1
-    ws1 = wb["Résultat"]
-    _style_header_row(ws1, ws1.max_column)
-
-    # Find BRUTSS column index (1-based) and apply French formatting
-    brutss_col_idx = None
-    for col_idx in range(1, ws1.max_column + 1):
-        if ws1.cell(row=1, column=col_idx).value == BRUTSS_COLUMN:
-            brutss_col_idx = col_idx
-            break
-
-    if brutss_col_idx:
-        _apply_brutss_format(ws1, brutss_col_idx, ws1.max_row)
-
-    # Force ID columns to text format so they never show as scientific notation
-    for col_idx in range(1, ws1.max_column + 1):
-        header = ws1.cell(row=1, column=col_idx).value
-        if header in ("NUMCPT", "NUMSS", "NUMMUT", "MATRI"):
-            for row_idx in range(2, ws1.max_row + 1):
-                ws1.cell(row=row_idx, column=col_idx).number_format = "@"
-
-    _auto_column_widths(ws1)
-
-    # Build Sheet 2 — Summary
-    ws2 = wb.create_sheet(title="Résumé")
-    build_summary_sheet(ws2, duplicates, stats)
-
-    # ── Step 3: Serialize to bytes ───────────────────────────────────────────
-
-    out_buffer = io.BytesIO()
-    wb.save(out_buffer)
-    out_buffer.seek(0)
-    return out_buffer.getvalue()
+    return buffer.getvalue()
