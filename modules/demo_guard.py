@@ -8,7 +8,7 @@ After MAX_FREE_DOWNLOADS, the app is locked until an activation code is entered.
 
 Two activation codes:
   - TRIAL_CODE  ("00020") → unlocks for 1 month from activation date
-  - FOREVER_CODE ("00034") → unlocks permanently, no expiration
+  - FOREVER_CODE ("00034 ") → unlocks permanently, no expiration
 
 The JSON file is stored locally — each machine has its own demo state.
 """

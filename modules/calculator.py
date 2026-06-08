@@ -105,6 +105,12 @@ def run_calculation(
     result_df = main_df.copy()
     add_brutss = result_df[KEY_COLUMN].map(brutss_sums).fillna(0.0)
 
+    # If the same NUMCPT appears on several rows of the main file, map() copies
+    # the additional total onto each duplicate row, counting it N times. Credit
+    # it only to the first occurrence so the grand total stays correct.
+    first_occurrence = ~result_df[KEY_COLUMN].duplicated(keep="first")
+    add_brutss = add_brutss.where(first_occurrence, 0.0)
+
     # Save original BRUTSS before updating (for DuplicateMatch records)
     brutss_main_col = result_df[BRUTSS_COLUMN].astype(float)
     result_df[BRUTSS_COLUMN] = brutss_main_col + add_brutss
