@@ -11,6 +11,7 @@ Tab 3: Payroll calculation (RETSS / PARTSS / NETPAI)
 Tab 4: Annual declaration (4 trimestrial files → 1 annual output)
 Tab 5: TXT export (annual xlsx → pipe-delimited txt)
 Tab 6: Checker (empty-value detection → downloadable report)
+Tab 7: Splitter (split one file into many by a chosen column → ZIP)
 """
 
 import os
@@ -38,6 +39,8 @@ from modules.annual_exporter import create_annual_excel, _format_french_annual
 from modules.txt_converter import convert_xlsx_to_txt
 
 from modules.checker import run_check, create_check_excel, CHECK_COLUMNS
+
+from modules.splitter import get_columns, split_by_column
 
 from modules.demo_guard import (
     is_demo_expired,
@@ -97,6 +100,11 @@ _SESSION_DEFAULTS = {
     "chk_error_message": None,
     "chk_processing_info": None,
     "processing_tab6": False,
+    # Tab 7
+    "spl_result_bytes": None,
+    "spl_error_message": None,
+    "spl_processing_info": None,
+    "processing_tab7": False,
 }
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
@@ -183,13 +191,14 @@ elif not is_unlocked():
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Fusion Multi-Fichiers",
     "📅 Consolidation Trimestrielle",
     "💰 Calcul Paie (RETSS/PARTSS)",
     "📋 Déclaration Annuelle",
     "📄 Export TXT",
     "🔎 Vérificateur",
+    "✂️ Séparateur",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1289,6 +1298,157 @@ with tab6:
             type="primary",
             use_container_width=False,
             key="download_tab6",
+            on_click=increment_downloads,
+        )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 7 — Splitter (split one file into many by a chosen column)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab7:
+
+    st.markdown(
+        "Séparez un fichier .xlsx en **plusieurs fichiers** selon la colonne de votre choix. "
+        "Par exemple, en choisissant la colonne **ADM**, vous obtenez un fichier par valeur "
+        "(ADM=J, ADM=S, …). Chaque fichier conserve toutes les colonnes d'origine. "
+        "Le résultat est une archive **.zip** contenant tous les fichiers."
+    )
+    st.divider()
+
+    # ── Upload section ───────────────────────────────────────────────────────
+
+    st.subheader("📁 Fichier à séparer")
+    st.caption("Un fichier .xlsx — vous choisirez ensuite la colonne de séparation.")
+    spl_file = st.file_uploader(
+        label="Fichier à séparer",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="spl_file_uploader",
+        label_visibility="collapsed",
+        disabled=st.session_state["processing_tab7"],
+    )
+    if spl_file:
+        st.success(f"✅ {spl_file.name} ({spl_file.size / 1024:.1f} Ko)")
+
+    # ── Column selection (populated from the uploaded file's header) ─────────
+
+    selected_column = None
+    if spl_file is not None:
+        try:
+            spl_columns = get_columns(spl_file, spl_file.name)
+        except ValueError as e:
+            spl_columns = []
+            st.error(f"❌ {e}")
+
+        if spl_columns:
+            st.divider()
+            # Default to ADM if present, else first column
+            default_idx = spl_columns.index("ADM") if "ADM" in spl_columns else 0
+            selected_column = st.selectbox(
+                "🔑 Colonne de séparation",
+                options=spl_columns,
+                index=default_idx,
+                help="Un fichier sera généré pour chaque valeur distincte de cette colonne.",
+                disabled=st.session_state["processing_tab7"],
+                key="spl_column_select",
+            )
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    spl_ready = spl_file is not None and selected_column is not None
+
+    if spl_file is None:
+        st.info("ℹ️ Veuillez téléverser un fichier .xlsx pour continuer.")
+
+    spl_clicked = st.button(
+        "▶  Séparer le fichier",
+        type="primary",
+        disabled=not spl_ready or st.session_state["processing_tab7"],
+        use_container_width=False,
+        key="btn_tab7",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
+    if spl_clicked and spl_ready:
+        st.session_state["spl_result_bytes"] = None
+        st.session_state["spl_error_message"] = None
+        st.session_state["spl_processing_info"] = None
+        st.session_state["spl_target_column"] = selected_column
+        st.session_state["processing_tab7"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → run pipeline
+    if st.session_state["processing_tab7"] and spl_file is not None:
+        target_column = st.session_state.get("spl_target_column")
+        try:
+            with st.spinner("⏳ Séparation en cours…"):
+                zip_bytes, spl_stats = split_by_column(
+                    spl_file, spl_file.name, target_column
+                )
+
+            st.session_state["spl_result_bytes"] = zip_bytes
+            st.session_state["spl_processing_info"] = {
+                "stats": spl_stats,
+                "source_name": spl_file.name,
+            }
+
+        except ValueError as e:
+            st.session_state["spl_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab7"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["spl_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["spl_error_message"], language=None)
+        st.caption("Corrigez le problème dans le fichier source et re-téléversez.")
+
+    if st.session_state["spl_result_bytes"]:
+        st.divider()
+        info = st.session_state["spl_processing_info"]
+        stats = info["stats"]
+
+        st.success(
+            f"✅ Séparation terminée — {stats['file_count']} fichier(s) générés "
+            f"selon la colonne « {stats['column']} » "
+            f"({stats['total_rows']} ligne(s) au total)."
+        )
+
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Colonne", stats["column"])
+        with col_b:
+            st.metric("Fichiers générés", stats["file_count"])
+        with col_c:
+            st.metric("Lignes totales", stats["total_rows"])
+
+        # List of generated files
+        st.subheader("📦 Fichiers générés")
+        groups_df = pd.DataFrame(
+            [
+                {"Valeur": g["value"], "Lignes": g["rows"], "Fichier": g["filename"]}
+                for g in stats["groups"]
+            ]
+        )
+        groups_df.index = groups_df.index + 1
+        st.dataframe(groups_df, use_container_width=True, hide_index=False)
+
+        zip_output_name = os.path.splitext(info["source_name"])[0] + f"_par_{stats['column']}.zip"
+
+        st.download_button(
+            label=f"⬇  Télécharger l'archive ({zip_output_name})",
+            data=st.session_state["spl_result_bytes"],
+            file_name=zip_output_name,
+            mime="application/zip",
+            type="primary",
+            use_container_width=False,
+            key="download_tab7",
             on_click=increment_downloads,
         )
 
