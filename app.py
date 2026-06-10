@@ -1196,6 +1196,7 @@ with tab6:
             st.session_state["chk_processing_info"] = {
                 "stats": chk_result.stats,
                 "preview": chk_result.report_df.head(200),
+                "per_column": {c: sub.head(500) for c, sub in chk_result.per_column.items()},
                 "source_name": chk_file.name,
             }
 
@@ -1239,6 +1240,14 @@ with tab6:
         with col_c:
             st.metric("Lignes avec vides", stats["rows_with_empty"])
 
+        # Warn about requested columns that are entirely absent from the file
+        absent = stats.get("columns_absent", [])
+        if absent:
+            st.info(
+                f"ℹ️ Colonne(s) absente(s) du fichier (non vérifiée(s)) : "
+                f"**{', '.join(absent)}**."
+            )
+
         # Per-column empty counts
         if stats["empty_counts"]:
             count_cols = st.columns(len(stats["empty_counts"]))
@@ -1246,9 +1255,22 @@ with tab6:
                 with count_cols[i]:
                     st.metric(f"Vides — {col_name}", n)
 
-        # Preview of problematic rows
+        # Per-column breakdown — one list per checked column with the record lines
+        per_column = info.get("per_column", {})
+        if per_column:
+            st.subheader("📋 Détail par colonne")
+            st.caption(
+                "Pour chaque colonne, la liste des enregistrements vides avec leur "
+                "feuille et leur numéro de ligne. Chaque colonne a aussi sa propre "
+                "feuille dans le fichier Excel téléchargé."
+            )
+            for col, sub in per_column.items():
+                with st.expander(f"⚠️ **{col}** — {len(sub)} enregistrement(s) vide(s)", expanded=False):
+                    st.dataframe(sub, use_container_width=True, hide_index=False)
+
+        # Preview of all problematic rows (combined)
         if stats["rows_with_empty"] > 0:
-            st.subheader("👁 Aperçu des lignes problématiques")
+            st.subheader("👁 Aperçu global des lignes problématiques")
             preview_df = info["preview"]
             if stats["rows_with_empty"] > len(preview_df):
                 st.caption(

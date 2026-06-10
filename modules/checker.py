@@ -9,9 +9,11 @@ more of the target columns are empty (NaN, blank string, or whitespace).
 Target columns (checked only if present in the sheet):
     DATNAIS, DATENT, BRUTSS, RETSS, PARTSS, NIN
 
-Output: an Excel report with one row per problematic employee row,
-including the sheet name, the original row number, and the list of
-empty columns — ready to download and fix in the source file.
+Output: an Excel report with
+  - a detail sheet (one row per problematic employee row, empty cells in red),
+  - a summary sheet,
+  - one sheet per checked column listing the records (sheet + line) where
+    that specific column is empty.
 """
 
 import io
@@ -33,6 +35,7 @@ IDENTITY_COLUMNS = ["NUMCPT", "NOM", "PRENOM"]
 class CheckResult(NamedTuple):
     """Full output of run_check, consumed by the UI and the exporter."""
     report_df: pd.DataFrame   # one row per problematic source row
+    per_column: dict          # {checked_col: DataFrame[FEUILLE, LIGNE, NUMCPT, NOM, PRENOM]}
     stats: dict               # summary counters for the UI
 
 
@@ -108,6 +111,7 @@ def run_check(file_obj, filename: str) -> CheckResult:
     sheets_skipped = 0
     rows_scanned = 0
     empty_counts = {col: 0 for col in CHECK_COLUMNS}
+    columns_seen = set()  # which checked columns exist in at least one sheet
 
     for sheet_name, df in sheets.items():
         df.columns = df.columns.astype(str).str.strip()
@@ -127,6 +131,7 @@ def run_check(file_obj, filename: str) -> CheckResult:
             sheets_skipped += 1
             continue
 
+        columns_seen.update(present_checks)
         sheets_checked += 1
         rows_scanned += len(df)
 
@@ -156,15 +161,48 @@ def run_check(file_obj, filename: str) -> CheckResult:
     else:
         report_df = pd.DataFrame()
 
+    # Per-column breakdown: for each checked column, the records where it is empty
+    # (FEUILLE + LIGNE + identity), so the user gets a dedicated list per column.
+    per_column = _build_per_column(report_df)
+
     stats = {
         "sheets_checked": sheets_checked,
         "sheets_skipped": sheets_skipped,
         "rows_scanned": rows_scanned,
         "rows_with_empty": len(report_df),
         "empty_counts": {c: n for c, n in empty_counts.items() if n > 0},
+        # Requested columns that exist in no sheet at all (e.g. NIN absent)
+        "columns_absent": [c for c in CHECK_COLUMNS if c not in columns_seen],
     }
 
-    return CheckResult(report_df=report_df, stats=stats)
+    return CheckResult(report_df=report_df, per_column=per_column, stats=stats)
+
+
+def _build_per_column(report_df: pd.DataFrame) -> dict:
+    """
+    Split the flat report into one list per checked column.
+
+    Returns {col: DataFrame[FEUILLE, LIGNE, NUMCPT, NOM, PRENOM]} containing
+    only the records where that specific column is empty. Columns with no
+    empties are omitted. Order follows CHECK_COLUMNS.
+    """
+    per_column: dict = {}
+    if report_df.empty:
+        return per_column
+
+    id_present = [c for c in IDENTITY_COLUMNS if c in report_df.columns]
+    base_cols = ["FEUILLE", "LIGNE"] + id_present
+
+    vides = report_df["COLONNES_VIDES"].fillna("").astype(str)
+    for col in CHECK_COLUMNS:
+        # A record belongs to this column's list if `col` appears in COLONNES_VIDES
+        mask = vides.str.split(", ").apply(lambda parts: col in parts)
+        if mask.any():
+            sub = report_df.loc[mask, base_cols].reset_index(drop=True)
+            sub.index = sub.index + 1  # 1-based numbering for display
+            per_column[col] = sub
+
+    return per_column
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,6 +214,32 @@ _HEADER_FONT = Font(bold=True, color="FFFFFF")
 _EMPTY_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 
 
+def _write_simple_sheet(ws, df: pd.DataFrame) -> None:
+    """Write a DataFrame to a worksheet with a styled header row."""
+    columns = df.columns.tolist()
+    for col_idx, col_name in enumerate(columns, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+        for col_idx, value in enumerate(row, start=1):
+            if pd.isna(value):
+                value = ""
+            ws.cell(row=row_idx, column=col_idx, value=value)
+
+    for col_idx, col_name in enumerate(columns, start=1):
+        max_len = max(
+            [len(str(col_name))] + [len(str(v)) for v in df[col_name].head(200)]
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 3, 40)
+
+    ws.freeze_panes = "A2"
+    if not df.empty:
+        ws.auto_filter.ref = ws.dimensions
+
+
 def create_check_excel(result: CheckResult, filename: str) -> bytes:
     """
     Build the downloadable Excel report.
@@ -183,6 +247,8 @@ def create_check_excel(result: CheckResult, filename: str) -> bytes:
     Sheet 1 ("Valeurs Vides"): one row per problematic source row,
     with the empty cells highlighted in red.
     Sheet 2 ("Résumé"):        summary statistics.
+    One sheet per checked column ("Vides NIN", "Vides DATNAIS", …):
+    the records (FEUILLE + LIGNE + identity) where that column is empty.
     """
     wb = openpyxl.Workbook()
 
@@ -240,11 +306,20 @@ def create_check_excel(result: CheckResult, filename: str) -> bytes:
     for col, n in result.stats["empty_counts"].items():
         summary_rows.append((f"Cellules vides — {col}", n))
 
+    absent = result.stats.get("columns_absent", [])
+    if absent:
+        summary_rows.append(("Colonnes absentes du fichier", ", ".join(absent)))
+
     for row_idx, (label, value) in enumerate(summary_rows, start=1):
         ws2.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
         ws2.cell(row=row_idx, column=2, value=value)
     ws2.column_dimensions["A"].width = 42
     ws2.column_dimensions["B"].width = 30
+
+    # ── One sheet per checked column — records where that column is empty ──
+    for col, sub in result.per_column.items():
+        ws_col = wb.create_sheet(title=f"Vides {col}"[:31])
+        _write_simple_sheet(ws_col, sub.reset_index(drop=True))
 
     buffer = io.BytesIO()
     wb.save(buffer)
