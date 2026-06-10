@@ -9,6 +9,8 @@ Tab 1: Multi-file merge (original feature)
 Tab 2: Trimestrial BRUTSS consolidation (3 monthly files → 1 output)
 Tab 3: Payroll calculation (RETSS / PARTSS / NETPAI)
 Tab 4: Annual declaration (4 trimestrial files → 1 annual output)
+Tab 5: TXT export (annual xlsx → pipe-delimited txt)
+Tab 6: Checker (empty-value detection → downloadable report)
 """
 
 import os
@@ -34,6 +36,8 @@ from modules.annual_merger import merge_annual
 from modules.annual_exporter import create_annual_excel, _format_french_annual
 
 from modules.txt_converter import convert_xlsx_to_txt
+
+from modules.checker import run_check, create_check_excel, CHECK_COLUMNS
 
 from modules.demo_guard import (
     is_demo_expired,
@@ -88,6 +92,11 @@ _SESSION_DEFAULTS = {
     "txt_error_message": None,
     "txt_processing_info": None,
     "processing_tab5": False,
+    # Tab 6
+    "chk_result_bytes": None,
+    "chk_error_message": None,
+    "chk_processing_info": None,
+    "processing_tab6": False,
 }
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
@@ -174,12 +183,13 @@ elif not is_unlocked():
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Fusion Multi-Fichiers",
     "📅 Consolidation Trimestrielle",
     "💰 Calcul Paie (RETSS/PARTSS)",
     "📋 Déclaration Annuelle",
     "📄 Export TXT",
+    "🔎 Vérificateur",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1112,6 +1122,151 @@ with tab5:
             type="primary",
             use_container_width=False,
             key="download_tab5",
+            on_click=increment_downloads,
+        )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 6 — Checker (empty-value detection)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab6:
+
+    st.markdown(
+        "Vérifiez un fichier .xlsx (toutes les feuilles) pour détecter les **valeurs vides** "
+        f"dans les colonnes : **{', '.join(CHECK_COLUMNS)}**. "
+        "Les lignes problématiques sont listées avec la feuille, le numéro de ligne et les "
+        "colonnes vides, puis exportées dans un fichier Excel téléchargeable."
+    )
+    st.divider()
+
+    # ── Upload section ───────────────────────────────────────────────────────
+
+    st.subheader("📁 Fichier à vérifier")
+    st.caption(
+        "Un fichier .xlsx — toutes les feuilles contenant au moins une des colonnes "
+        f"({', '.join(CHECK_COLUMNS)}) seront vérifiées."
+    )
+    chk_file = st.file_uploader(
+        label="Fichier à vérifier",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="chk_file_uploader",
+        label_visibility="collapsed",
+        disabled=st.session_state["processing_tab6"],
+    )
+    if chk_file:
+        st.success(f"✅ {chk_file.name} ({chk_file.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    chk_ready = chk_file is not None
+
+    if not chk_ready:
+        st.info("ℹ️ Veuillez téléverser un fichier .xlsx pour continuer.")
+
+    chk_clicked = st.button(
+        "▶  Vérifier le fichier",
+        type="primary",
+        disabled=not chk_ready or st.session_state["processing_tab6"],
+        use_container_width=False,
+        key="btn_tab6",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
+    if chk_clicked and chk_ready:
+        st.session_state["chk_result_bytes"] = None
+        st.session_state["chk_error_message"] = None
+        st.session_state["chk_processing_info"] = None
+        st.session_state["processing_tab6"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → run pipeline
+    if st.session_state["processing_tab6"] and chk_file is not None:
+        try:
+            with st.spinner("⏳ Vérification en cours…"):
+
+                chk_result = run_check(chk_file, chk_file.name)
+                chk_bytes = create_check_excel(chk_result, chk_file.name)
+
+            st.session_state["chk_result_bytes"] = chk_bytes
+            st.session_state["chk_processing_info"] = {
+                "stats": chk_result.stats,
+                "preview": chk_result.report_df.head(200),
+                "source_name": chk_file.name,
+            }
+
+        except ValueError as e:
+            st.session_state["chk_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab6"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["chk_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["chk_error_message"], language=None)
+        st.caption("Corrigez le problème dans le fichier source et re-téléversez.")
+
+    if st.session_state["chk_result_bytes"]:
+        st.divider()
+        info = st.session_state["chk_processing_info"]
+        stats = info["stats"]
+
+        if stats["rows_with_empty"] == 0:
+            st.success(
+                f"✅ Aucune valeur vide détectée — "
+                f"{stats['rows_scanned']} ligne(s) analysée(s) "
+                f"dans {stats['sheets_checked']} feuille(s)."
+            )
+        else:
+            st.warning(
+                f"⚠️ {stats['rows_with_empty']} ligne(s) avec valeur(s) vide(s) détectée(s) "
+                f"sur {stats['rows_scanned']} ligne(s) analysée(s) "
+                f"dans {stats['sheets_checked']} feuille(s)."
+            )
+
+        # Summary metrics
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Feuilles vérifiées", stats["sheets_checked"])
+        with col_b:
+            st.metric("Lignes analysées", stats["rows_scanned"])
+        with col_c:
+            st.metric("Lignes avec vides", stats["rows_with_empty"])
+
+        # Per-column empty counts
+        if stats["empty_counts"]:
+            count_cols = st.columns(len(stats["empty_counts"]))
+            for i, (col_name, n) in enumerate(stats["empty_counts"].items()):
+                with count_cols[i]:
+                    st.metric(f"Vides — {col_name}", n)
+
+        # Preview of problematic rows
+        if stats["rows_with_empty"] > 0:
+            st.subheader("👁 Aperçu des lignes problématiques")
+            preview_df = info["preview"]
+            if stats["rows_with_empty"] > len(preview_df):
+                st.caption(
+                    f"Affichage des {len(preview_df)} premières lignes — "
+                    f"le fichier Excel contient les {stats['rows_with_empty']} lignes complètes."
+                )
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+        chk_output_name = os.path.splitext(info["source_name"])[0] + "_verification.xlsx"
+
+        st.download_button(
+            label=f"⬇  Télécharger le rapport ({chk_output_name})",
+            data=st.session_state["chk_result_bytes"],
+            file_name=chk_output_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+            key="download_tab6",
             on_click=increment_downloads,
         )
 
