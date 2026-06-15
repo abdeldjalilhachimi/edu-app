@@ -12,6 +12,7 @@ Tab 4: Annual declaration (4 trimestrial files → 1 annual output)
 Tab 5: TXT export (annual xlsx → pipe-delimited txt)
 Tab 6: Checker (empty-value detection → downloadable report)
 Tab 7: Splitter (split one file into many by a chosen column → ZIP)
+Tab 8: Comparator (compare a secondary file to an official one by NUMSS)
 """
 
 import os
@@ -41,6 +42,8 @@ from modules.txt_converter import convert_xlsx_to_txt
 from modules.checker import run_check, create_check_excel, CHECK_COLUMNS
 
 from modules.splitter import get_columns, split_by_column
+
+from modules.comparator import compare_files, create_comparison_excel
 
 from modules.demo_guard import (
     is_demo_expired,
@@ -105,6 +108,11 @@ _SESSION_DEFAULTS = {
     "spl_error_message": None,
     "spl_processing_info": None,
     "processing_tab7": False,
+    # Tab 8
+    "cmp_result_bytes": None,
+    "cmp_error_message": None,
+    "cmp_processing_info": None,
+    "processing_tab8": False,
 }
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
@@ -191,7 +199,7 @@ elif not is_unlocked():
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 Fusion Multi-Fichiers",
     "📅 Consolidation Trimestrielle",
     "💰 Calcul Paie (RETSS/PARTSS)",
@@ -199,6 +207,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📄 Export TXT",
     "🔎 Vérificateur",
     "✂️ Séparateur",
+    "🔀 Comparateur NUMSS",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1451,6 +1460,182 @@ with tab7:
             key="download_tab7",
             on_click=increment_downloads,
         )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 8 — Comparator (official vs secondary by NUMSS)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab8:
+
+    st.markdown(
+        "Comparez un fichier **secondaire** à un fichier **officiel** (fiable), "
+        "en utilisant la colonne **NUMSS** comme clé. Le résultat indique : "
+        "les NUMSS **manquants** dans le secondaire, ceux **en trop** (absents de "
+        "l'officiel), et les NUMSS communs dont les champs (NOM, PRENOM, DATNAIS) "
+        "**diffèrent**. L'en-tête est détecté automatiquement même s'il n'est pas "
+        "sur la première ligne."
+    )
+    st.divider()
+
+    # ── Upload section ───────────────────────────────────────────────────────
+
+    col_off, col_sec = st.columns(2)
+
+    with col_off:
+        st.subheader("✅ Fichier Officiel (fiable)")
+        st.caption("Fichier .xlsx de référence — doit contenir la colonne NUMSS")
+        off_file = st.file_uploader(
+            label="Fichier officiel",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="cmp_off_uploader",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab8"],
+        )
+        if off_file:
+            st.success(f"✅ {off_file.name} ({off_file.size / 1024:.1f} Ko)")
+
+    with col_sec:
+        st.subheader("🔍 Fichier Secondaire (à comparer)")
+        st.caption("Fichier .xlsx à vérifier — doit contenir la colonne NUMSS")
+        sec_file = st.file_uploader(
+            label="Fichier secondaire",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="cmp_sec_uploader",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab8"],
+        )
+        if sec_file:
+            st.success(f"✅ {sec_file.name} ({sec_file.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    # ── Process button ───────────────────────────────────────────────────────
+
+    cmp_ready = off_file is not None and sec_file is not None
+
+    if not cmp_ready:
+        missing = []
+        if off_file is None:
+            missing.append("Officiel")
+        if sec_file is None:
+            missing.append("Secondaire")
+        st.info(f"ℹ️ Veuillez téléverser le(s) fichier(s) manquant(s) : {', '.join(missing)}.")
+
+    cmp_clicked = st.button(
+        "▶  Comparer les fichiers",
+        type="primary",
+        disabled=not cmp_ready or st.session_state["processing_tab8"],
+        use_container_width=False,
+        key="btn_tab8",
+    )
+
+    # ── Processing pipeline ──────────────────────────────────────────────────
+
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
+    if cmp_clicked and cmp_ready:
+        st.session_state["cmp_result_bytes"] = None
+        st.session_state["cmp_error_message"] = None
+        st.session_state["cmp_processing_info"] = None
+        st.session_state["processing_tab8"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → run pipeline
+    if st.session_state["processing_tab8"] and off_file is not None and sec_file is not None:
+        try:
+            with st.spinner("⏳ Comparaison en cours…"):
+                cmp_result = compare_files(
+                    off_file, off_file.name,
+                    sec_file, sec_file.name,
+                )
+                cmp_bytes = create_comparison_excel(cmp_result)
+
+            st.session_state["cmp_result_bytes"] = cmp_bytes
+            st.session_state["cmp_processing_info"] = {
+                "stats": cmp_result.stats,
+                "missing_preview": cmp_result.missing_df.head(200),
+                "extra_preview": cmp_result.extra_df.head(200),
+                "diff_preview": cmp_result.diff_df.head(200),
+            }
+
+        except ValueError as e:
+            st.session_state["cmp_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab8"] = False
+
+    # ── Results / Error display ──────────────────────────────────────────────
+
+    if st.session_state["cmp_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["cmp_error_message"], language=None)
+        st.caption("Vérifiez que les deux fichiers contiennent la colonne NUMSS.")
+
+    if st.session_state["cmp_result_bytes"]:
+        st.divider()
+        info = st.session_state["cmp_processing_info"]
+        stats = info["stats"]
+
+        if stats["missing_count"] == 0 and stats["extra_count"] == 0 and stats["diff_count"] == 0:
+            st.success("✅ Les deux fichiers concordent parfaitement sur le NUMSS.")
+        else:
+            st.warning(
+                f"⚠️ {stats['missing_count']} manquant(s), "
+                f"{stats['extra_count']} en trop, "
+                f"{stats['diff_count']} différence(s) détectée(s)."
+            )
+
+        # Summary metrics
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.metric("NUMSS correspondants", stats["matched"])
+        with col_b:
+            st.metric("Manquants (officiel)", stats["missing_count"])
+        with col_c:
+            st.metric("En trop (secondaire)", stats["extra_count"])
+        with col_d:
+            st.metric("Avec différences", stats["diff_count"])
+
+        if stats["official_blank_keys"] or stats["secondary_blank_keys"]:
+            st.info(
+                f"ℹ️ NUMSS vides ignorés — "
+                f"officiel : {stats['official_blank_keys']}, "
+                f"secondaire : {stats['secondary_blank_keys']}."
+            )
+
+        st.download_button(
+            label="⬇  Télécharger le rapport de comparaison (comparaison.xlsx)",
+            data=st.session_state["cmp_result_bytes"],
+            file_name="comparaison.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+            key="download_tab8",
+            on_click=increment_downloads,
+        )
+
+        # Previews
+        if stats["missing_count"] > 0:
+            with st.expander(
+                f"🔴 Manquants dans le secondaire — {stats['missing_count']} NUMSS",
+                expanded=False,
+            ):
+                st.dataframe(info["missing_preview"], use_container_width=True, hide_index=True)
+
+        if stats["extra_count"] > 0:
+            with st.expander(
+                f"🟠 En trop dans le secondaire — {stats['extra_count']} NUMSS",
+                expanded=False,
+            ):
+                st.dataframe(info["extra_preview"], use_container_width=True, hide_index=True)
+
+        if stats["diff_count"] > 0:
+            with st.expander(
+                f"🟡 Correspondances avec différences — {stats['diff_count']} NUMSS",
+                expanded=False,
+            ):
+                st.dataframe(info["diff_preview"], use_container_width=True, hide_index=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Footer

@@ -7,7 +7,10 @@ Scans every sheet of an uploaded .xlsx file and detects rows where one or
 more of the target columns are empty (NaN, blank string, or whitespace).
 
 Target columns (checked only if present in the sheet):
-    DATNAIS, DATENT, BRUTSS, RETSS, PARTSS, NIN
+    NUMSS, DATNAIS, DATENT, BRUTSS, RETSS, PARTSS, NIN
+
+For NUMSS, a value of 0 (or all-zeros) is also treated as empty, since a
+zero NUMSS is not a valid social-security number.
 
 Output: an Excel report with
   - a detail sheet (one row per problematic employee row, empty cells in red),
@@ -26,7 +29,10 @@ from openpyxl.utils import get_column_letter
 
 
 # Columns to check for empty values (only those present in each sheet are checked)
-CHECK_COLUMNS = ["NIN", "DATNAIS", "DATENT", "BRUTSS", "RETSS", "PARTSS"]
+CHECK_COLUMNS = ["NUMSS", "NIN", "DATNAIS", "DATENT", "BRUTSS", "RETSS", "PARTSS"]
+
+# Columns where a value of 0 (or all-zeros) is also considered empty/invalid
+ZERO_AS_EMPTY = {"NUMSS"}
 
 # Identity columns copied into the report when present
 IDENTITY_COLUMNS = ["NUMCPT", "NOM", "PRENOM"]
@@ -45,6 +51,21 @@ def _is_empty(series: pd.Series) -> pd.Series:
     return series.isna() | as_str.isin(["", "nan", "none", "nat"])
 
 
+def _empty_mask(series: pd.Series, column: str) -> pd.Series:
+    """
+    Column-aware empty mask.
+
+    Always flags NaN / blank / whitespace. For columns in ZERO_AS_EMPTY
+    (e.g. NUMSS), also flags values equal to 0 (covers "0", "0.0",
+    "000000000000", etc.).
+    """
+    mask = _is_empty(series)
+    if column in ZERO_AS_EMPTY:
+        numeric = pd.to_numeric(series, errors="coerce")
+        mask = mask | (numeric == 0)
+    return mask
+
+
 def check_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """
     Check one sheet's DataFrame for empty values in the target columns.
@@ -56,7 +77,7 @@ def check_sheet(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     if not present_checks or df.empty:
         return pd.DataFrame()
 
-    empty_masks = {col: _is_empty(df[col]) for col in present_checks}
+    empty_masks = {col: _empty_mask(df[col], col) for col in present_checks}
     any_empty = pd.concat(empty_masks.values(), axis=1).any(axis=1)
 
     if not any_empty.any():
@@ -136,7 +157,7 @@ def run_check(file_obj, filename: str) -> CheckResult:
         rows_scanned += len(df)
 
         for col in present_checks:
-            empty_counts[col] += int(_is_empty(df[col]).sum())
+            empty_counts[col] += int(_empty_mask(df[col], col).sum())
 
         report = check_sheet(df, sheet_name)
         if not report.empty:
