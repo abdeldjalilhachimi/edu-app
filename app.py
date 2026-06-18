@@ -1643,4 +1643,4 @@ with tab8:
 
 st.divider()
 
-st.title("🧑🏻‍💻 Create by Abdeldjalil Hachimi ")
+st.title("🧑🏻‍💻 Create by Abdeldjalil Hachimi 2026 ")
