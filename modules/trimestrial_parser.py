@@ -27,6 +27,23 @@ from modules.trimestrial_types import EmployeeKey, MonthlyEntry
 
 BRUTSS_COLUMN = "BRUTSS"
 
+# The "days worked" value is stored under a different column name depending on
+# the file type. Each file carries exactly one of these; we use the first one
+# present, by this priority, and map it to NBRTRAV.
+#   PAIE → NBRTRAV   PRIME → JRPRIME   RAPPEL → NBRJ   RAPPEL PRIM → NBRJ/JRPRIME
+NBRTRAV_ALIASES = ["NBRTRAV", "JRPRIME", "NBRJ"]
+
+
+def _resolve_nbrtrav(df: pd.DataFrame) -> pd.Series:
+    """
+    Return the days-worked column as an integer Series, regardless of which
+    alias the file uses (NBRTRAV / JRPRIME / NBRJ). Missing → all zeros.
+    """
+    for alias in NBRTRAV_ALIASES:
+        if alias in df.columns:
+            return pd.to_numeric(df[alias], errors="coerce").fillna(0).astype(int)
+    return pd.Series(0, index=df.index, dtype=int)
+
 
 def _float_to_cents(value: float) -> int:
     """
@@ -156,11 +173,9 @@ def parse_monthly_file(file_obj, filename: str) -> tuple:
         else:
             df[col_name] = ""
 
-    # NBRTRAV: convert to numeric (integer days worked) — will be summed per employee
-    if "NBRTRAV" in df.columns:
-        df["NBRTRAV"] = pd.to_numeric(df["NBRTRAV"], errors="coerce").fillna(0).astype(int)
-    else:
-        df["NBRTRAV"] = 0
+    # NBRTRAV: read from whichever alias the file uses (NBRTRAV/JRPRIME/NBRJ),
+    # as integer days worked — will be summed per employee.
+    df["NBRTRAV"] = _resolve_nbrtrav(df)
 
     # Group by normalized NUMCPT: sum BRUTSS + NBRTRAV, keep first row for identity
     group_key = "_NUMCPT_NORM"
