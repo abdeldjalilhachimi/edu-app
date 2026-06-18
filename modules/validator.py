@@ -12,8 +12,12 @@ import openpyxl
 # Required columns in every uploaded file
 REQUIRED_COLUMNS = {"BRUTSS", "NOM", "PRENOM", "NUMCPT"}
 
-# Force these columns to be read as text (avoid precision loss / scientific notation)
-TEXT_DTYPE = {"NUMCPT": str, "NUMSS": str, "NUMMUT": str}
+# Force these columns to be read as text (avoid precision loss / scientific
+# notation, and preserve leading zeros e.g. employer "0840198947")
+TEXT_DTYPE = {
+    "NUMCPT": str, "NUMSS": str, "NUMMUT": str,
+    "NEMPLOYEUR": str, "ANREF": str, "ADM": str,
+}
 
 
 def load_excel_safe(file_obj, filename: str, sheet_name=0) -> pd.DataFrame:

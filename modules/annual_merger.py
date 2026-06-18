@@ -97,10 +97,13 @@ def merge_annual(
         numss = _pick_best([e.numss for e in non_none])
         adm = _pick_best([e.adm for e in non_none])
         datnais = format_ddmmyyyy(_pick_best([e.datnais for e in non_none]))
-        # Sum days across all quarters the employee appears in (not first value)
-        nbrtrav = _sum_days([e.nbrtrav for e in non_none])
         datent = format_ddmmyyyy(_pick_best([e.datent for e in non_none]))
         datsor = format_ddmmyyyy(_pick_best([e.datsor for e in non_none]))
+
+        # Days worked per quarter (0 if absent that quarter)
+        q_days = tuple(_sum_days([e.nbrtrav]) if e is not None else 0 for e in entries)
+        # Total days across all quarters
+        nbrtrav = sum(q_days)
 
         # BRUTSS per quarter (0 if absent)
         q_cents = tuple(
@@ -124,6 +127,7 @@ def merge_annual(
             datent=datent,
             datsor=datsor,
             quarterly_brutss_cents=q_cents,
+            quarterly_nbrtrav=q_days,
             brutss_annual=brutss_annual,
         ))
 

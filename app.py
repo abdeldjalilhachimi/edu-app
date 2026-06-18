@@ -1100,27 +1100,30 @@ with tab5:
 
         st.success(
             f"✅ Conversion terminée — "
-            f"{info['total_rows']} ligne(s), {info['columns_kept']} colonne(s) conservée(s)."
+            f"{info['total_rows']} enregistrement(s), format fixe {info['record_width']} caractères."
         )
 
-        if info["columns_dropped_count"] > 0:
-            st.info(
-                f"ℹ️ {info['columns_dropped_count']} colonne(s) trimestrielle(s) supprimée(s) : "
-                f"{', '.join(info['columns_dropped'])}"
+        if info.get("missing_day_columns"):
+            st.warning(
+                "⚠️ Le fichier ne contient pas les colonnes de durée par trimestre "
+                "(NBRTRAV_<trimestre>). Les durées trimestrielles seront mises à 0. "
+                "Régénérez le fichier annuel via l'onglet « Déclaration Annuelle » "
+                "pour les inclure."
             )
 
         # Summary metrics
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            st.metric("Lignes", info["total_rows"])
+            st.metric("Enregistrements", info["total_rows"])
         with col_b:
-            st.metric("Colonnes conservées", info["columns_kept"])
+            st.metric("Largeur (caractères)", info["record_width"])
         with col_c:
-            st.metric("Colonnes supprimées", info["columns_dropped_count"])
+            st.metric("Champs", info["field_count"])
 
-        # Preview
-        preview_text = st.session_state["txt_result_bytes"].decode("utf-8")
-        preview_lines = preview_text.strip().split("\n")
+        # Preview (single-byte encoding)
+        preview_text = st.session_state["txt_result_bytes"].decode(info["encoding"], errors="replace")
+        preview_lines = preview_text.strip("\r\n").split("\n")
+        preview_lines = [ln.rstrip("\r") for ln in preview_lines]
         if len(preview_lines) > 6:
             preview_display = "\n".join(preview_lines[:6]) + f"\n... ({len(preview_lines) - 6} lignes supplémentaires)"
         else:

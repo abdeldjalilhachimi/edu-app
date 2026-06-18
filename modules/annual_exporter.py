@@ -225,6 +225,9 @@ def create_annual_excel(
             "DATENT": row.datent,
             "DATSOR": row.datsor,
         }
+        # Per-quarter days worked (needed by the official fixed-width TXT export)
+        for i, label in enumerate(file_labels):
+            row_dict[f"NBRTRAV_{label}"] = row.quarterly_nbrtrav[i]
         for i, col_name in enumerate(brutss_col_names):
             row_dict[col_name] = _cents_to_float(row.quarterly_brutss_cents[i])
         row_dict["BRUTSS_ANNUEL"] = _cents_to_float(row.brutss_annual)

@@ -52,8 +52,9 @@ class AnnualRow(NamedTuple):
     nbrtrav: int      # Total days worked, summed across all quarters
     datent: str
     datsor: str
-    quarterly_brutss_cents: tuple  # (q1_cents, q2_cents, q3_cents, q4_cents)
-    brutss_annual: int             # Sum of all 4 quarters in cents
+    quarterly_brutss_cents: tuple   # (q1_cents, q2_cents, q3_cents, q4_cents)
+    quarterly_nbrtrav: tuple        # (q1_days, q2_days, q3_days, q4_days)
+    brutss_annual: int              # Sum of all 4 quarters in cents
 
 
 class AnnualStats(NamedTuple):
