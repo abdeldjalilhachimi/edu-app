@@ -15,6 +15,30 @@ BRUTSS_COLUMN = "BRUTSS"
 KEY_COLUMN = "_KEY"
 EMPTY_BRUTSS_COLUMN = "_BRUTSS_WAS_EMPTY"
 
+# The "days worked" value is stored under a different column name depending on
+# the file type (PAIE→NBRTRAV, PRIME→JRPRIME, RAPPEL→NBRJ, RAPPEL PRIM→either).
+# Each file carries exactly one; we map whichever is present to NBRTRAV.
+NBRTRAV_COLUMN = "NBRTRAV"
+NBRTRAV_ALIASES = ["NBRTRAV", "JRPRIME", "NBRJ"]
+
+
+def resolve_days_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure a canonical numeric NBRTRAV column exists, sourced from whichever
+    alias the file uses (NBRTRAV / JRPRIME / NBRJ). Missing → 0.
+
+    Returns a copy with the NBRTRAV column added/normalized.
+    """
+    result = df.copy()
+    for alias in NBRTRAV_ALIASES:
+        if alias in result.columns:
+            result[NBRTRAV_COLUMN] = (
+                pd.to_numeric(result[alias], errors="coerce").fillna(0).astype(int)
+            )
+            return result
+    result[NBRTRAV_COLUMN] = 0
+    return result
+
 
 def detect_and_clean_number_string(raw: str) -> str:
     """
@@ -275,12 +299,14 @@ def clean_all_dataframes(
     # Clean main file
     main_clean = convert_brutss_column(main_df, main_filename)
     main_clean = build_composite_key(main_clean)
+    main_clean = resolve_days_column(main_clean)
 
     # Clean each additional file
     additional_clean = []
     for df, filename in zip(additional_dfs, additional_filenames):
         cleaned = convert_brutss_column(df, filename)
         cleaned = build_composite_key(cleaned)
+        cleaned = resolve_days_column(cleaned)
         additional_clean.append(cleaned)
 
     return main_clean, additional_clean

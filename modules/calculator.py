@@ -20,6 +20,7 @@ from typing import NamedTuple
 import pandas as pd
 
 BRUTSS_COLUMN = "BRUTSS"
+NBRTRAV_COLUMN = "NBRTRAV"
 KEY_COLUMN = "_KEY"
 
 
@@ -48,14 +49,17 @@ def build_additional_lookup(additional_dfs: list) -> tuple:
 
     Returns
     -------
-    tuple (brutss_sums: pd.Series, first_rows: pd.DataFrame)
-        brutss_sums: Series indexed by _KEY with summed BRUTSS.
-        first_rows: DataFrame indexed by _KEY with first-seen row per key.
-        Both are empty if no valid additional data exists.
+    tuple (brutss_sums, nbrtrav_sums, first_rows)
+        brutss_sums:  Series indexed by _KEY with summed BRUTSS.
+        nbrtrav_sums: Series indexed by _KEY with summed NBRTRAV (days worked).
+        first_rows:   DataFrame indexed by _KEY with first-seen row per key.
+        All empty if no valid additional data exists.
     """
     if not additional_dfs:
         empty_idx = pd.Index([], name=KEY_COLUMN)
-        return pd.Series(dtype="float64", index=empty_idx), pd.DataFrame()
+        empty_f = pd.Series(dtype="float64", index=empty_idx)
+        empty_i = pd.Series(dtype="int64", index=empty_idx)
+        return empty_f, empty_i, pd.DataFrame()
 
     # Concatenate all additional DataFrames at once
     all_add = pd.concat(additional_dfs, ignore_index=True)
@@ -67,15 +71,23 @@ def build_additional_lookup(additional_dfs: list) -> tuple:
 
     if all_add.empty:
         empty_idx = pd.Index([], name=KEY_COLUMN)
-        return pd.Series(dtype="float64", index=empty_idx), pd.DataFrame()
+        empty_f = pd.Series(dtype="float64", index=empty_idx)
+        empty_i = pd.Series(dtype="int64", index=empty_idx)
+        return empty_f, empty_i, pd.DataFrame()
 
     # Vectorized groupby: sum BRUTSS per key
     brutss_sums = all_add.groupby(KEY_COLUMN)[BRUTSS_COLUMN].sum()
 
+    # Sum NBRTRAV (days worked) per key — resolved from aliases upstream
+    if NBRTRAV_COLUMN in all_add.columns:
+        nbrtrav_sums = all_add.groupby(KEY_COLUMN)[NBRTRAV_COLUMN].sum()
+    else:
+        nbrtrav_sums = pd.Series(0, index=brutss_sums.index, dtype="int64")
+
     # Keep first-seen row per key (for additional-only appending)
     first_rows = all_add.groupby(KEY_COLUMN).first()
 
-    return brutss_sums, first_rows
+    return brutss_sums, nbrtrav_sums, first_rows
 
 
 def run_calculation(
@@ -99,7 +111,7 @@ def run_calculation(
     -------
     CalculationResult
     """
-    brutss_sums, first_rows = build_additional_lookup(additional_dfs)
+    brutss_sums, nbrtrav_sums, first_rows = build_additional_lookup(additional_dfs)
 
     # ── Step 1: Vectorized merge — map additional BRUTSS onto main keys ──
     result_df = main_df.copy()
@@ -114,6 +126,16 @@ def run_calculation(
     # Save original BRUTSS before updating (for DuplicateMatch records)
     brutss_main_col = result_df[BRUTSS_COLUMN].astype(float)
     result_df[BRUTSS_COLUMN] = brutss_main_col + add_brutss
+
+    # ── NBRTRAV (days worked): add additional days onto main, same as BRUTSS ──
+    if NBRTRAV_COLUMN not in result_df.columns:
+        result_df[NBRTRAV_COLUMN] = 0
+    add_nbrtrav = result_df[KEY_COLUMN].map(nbrtrav_sums).fillna(0)
+    add_nbrtrav = add_nbrtrav.where(first_occurrence, 0)
+    main_nbrtrav_col = pd.to_numeric(
+        result_df[NBRTRAV_COLUMN], errors="coerce"
+    ).fillna(0)
+    result_df[NBRTRAV_COLUMN] = (main_nbrtrav_col + add_nbrtrav).astype(int)
 
     # ── Build duplicates list from matched rows ─────────────────────────
     matched_mask = add_brutss > 0
@@ -146,6 +168,9 @@ def run_calculation(
             # Select additional-only rows from the grouped first_rows
             add_only = first_rows.loc[first_rows.index.isin(additional_only_keys)].copy()
             add_only[BRUTSS_COLUMN] = brutss_sums[add_only.index]
+            # Days worked for additional-only employees = their summed NBRTRAV
+            if NBRTRAV_COLUMN in add_only.columns:
+                add_only[NBRTRAV_COLUMN] = nbrtrav_sums.reindex(add_only.index).fillna(0).astype(int)
 
             # Build DuplicateMatch records for additional-only rows
             for key in sorted(additional_only_keys):
@@ -175,6 +200,9 @@ def run_calculation(
         "duplicate_count": len(consumed_keys),
         "added_count": added_count,
         "brutss_total": brutss_total,
+        "nbrtrav_total": int(pd.to_numeric(
+            result_df.get(NBRTRAV_COLUMN, 0), errors="coerce"
+        ).fillna(0).sum()),
     }
 
     return CalculationResult(
