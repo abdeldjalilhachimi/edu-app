@@ -30,6 +30,26 @@ def _pick_best(values: list) -> str:
     return ""
 
 
+def _sum_days(values: list) -> int:
+    """
+    Sum NBRTRAV (days worked) across quarters as integers.
+
+    Values arrive as strings (e.g. "15", "0", "15.0", ""); non-numeric or
+    empty entries count as 0. Used instead of _pick_best so days accumulate
+    over the year rather than taking the first quarter's value.
+    """
+    total = 0
+    for v in values:
+        s = str(v).strip()
+        if not s or s.lower() in ("nan", "none"):
+            continue
+        try:
+            total += int(round(float(s)))
+        except (ValueError, TypeError):
+            continue
+    return total
+
+
 def merge_annual(
     q1: dict, q2: dict, q3: dict, q4: dict,
     fname1: str, fname2: str, fname3: str, fname4: str,
@@ -76,7 +96,8 @@ def merge_annual(
         numss = _pick_best([e.numss for e in non_none])
         adm = _pick_best([e.adm for e in non_none])
         datnais = _pick_best([e.datnais for e in non_none])
-        nbrtrav = _pick_best([e.nbrtrav for e in non_none])
+        # Sum days across all quarters the employee appears in (not first value)
+        nbrtrav = _sum_days([e.nbrtrav for e in non_none])
         datent = _pick_best([e.datent for e in non_none])
         datsor = _pick_best([e.datsor for e in non_none])
 
