@@ -20,6 +20,7 @@ from modules.trimestrial_types import (
     TrimestrialResult,
     filename_to_label,
 )
+from modules.date_utils import format_ddmmyyyy
 
 
 def merge_trimestrial(
@@ -122,10 +123,10 @@ def merge_trimestrial(
             prenom=representative.prenom,
             numss=numss,
             adm=adm,
-            datnais=datnais,
+            datnais=format_ddmmyyyy(datnais),
             nbrtrav=nbrtrav,
-            datent=datent,
-            datsor=datsor,
+            datent=format_ddmmyyyy(datent),
+            datsor=format_ddmmyyyy(datsor),
             monthly_brutss_cents=(m1_cents, m2_cents, m3_cents),
             brutss_total=total_cents,
         ))

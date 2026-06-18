@@ -20,6 +20,7 @@ from modules.annual_types import (
     AnnualResult,
     filename_to_label,
 )
+from modules.date_utils import format_ddmmyyyy
 
 
 def _pick_best(values: list) -> str:
@@ -95,11 +96,11 @@ def merge_annual(
         prenom = _pick_best([e.prenom for e in non_none])
         numss = _pick_best([e.numss for e in non_none])
         adm = _pick_best([e.adm for e in non_none])
-        datnais = _pick_best([e.datnais for e in non_none])
+        datnais = format_ddmmyyyy(_pick_best([e.datnais for e in non_none]))
         # Sum days across all quarters the employee appears in (not first value)
         nbrtrav = _sum_days([e.nbrtrav for e in non_none])
-        datent = _pick_best([e.datent for e in non_none])
-        datsor = _pick_best([e.datsor for e in non_none])
+        datent = format_ddmmyyyy(_pick_best([e.datent for e in non_none]))
+        datsor = format_ddmmyyyy(_pick_best([e.datsor for e in non_none]))
 
         # BRUTSS per quarter (0 if absent)
         q_cents = tuple(
