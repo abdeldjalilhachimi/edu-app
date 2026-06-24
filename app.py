@@ -45,6 +45,8 @@ from modules.splitter import get_columns, split_by_column
 
 from modules.comparator import compare_files, create_comparison_excel
 
+from modules.cleaner_fill import clean_and_fill
+
 from modules.demo_guard import (
     is_demo_expired,
     is_unlocked,
@@ -113,6 +115,11 @@ _SESSION_DEFAULTS = {
     "cmp_error_message": None,
     "cmp_processing_info": None,
     "processing_tab8": False,
+    # Tab 9
+    "cln_result_bytes": None,
+    "cln_error_message": None,
+    "cln_processing_info": None,
+    "processing_tab9": False,
 }
 for _key, _default in _SESSION_DEFAULTS.items():
     if _key not in st.session_state:
@@ -199,7 +206,7 @@ elif not is_unlocked():
 # Tabs
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 Fusion Multi-Fichiers",
     "📅 Consolidation Trimestrielle",
     "💰 Calcul Paie (RETSS/PARTSS)",
@@ -208,6 +215,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🔎 Vérificateur",
     "✂️ Séparateur",
     "🔀 Comparateur NUMSS",
+    "🧹 Nettoyage",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1639,6 +1647,140 @@ with tab8:
                 expanded=False,
             ):
                 st.dataframe(info["diff_preview"], use_container_width=True, hide_index=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 9 — Cleaner (clean junk dates + fill NUMSS/DATNAIS/DATENT from official)
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab9:
+
+    st.markdown(
+        "Nettoyez un fichier (ex. déclaration annuelle) puis complétez les champs "
+        "manquants à partir du **fichier officiel CNAS**. Le nettoyage : dates "
+        "**DATNAIS / DATENT / DATSOR** normalisées en JJ/MM/AAAA et **dates erronées "
+        "supprimées** (ex. 30/12/1899). Le remplissage (par **NUMSS**) : "
+        "**NUMSS** vide (via NOM+PRÉNOM), **DATNAIS** et **DATENT** vides. "
+        "Les cellules remplies sont surlignées en vert, les dates erronées en orange."
+    )
+    st.divider()
+
+    col_cln1, col_cln2 = st.columns(2)
+    with col_cln1:
+        st.subheader("📁 Fichier à nettoyer")
+        st.caption("Le fichier .xlsx à corriger (colonnes NUMSS, NOM, PRENOM, DATNAIS, DATENT…)")
+        cln_file = st.file_uploader(
+            label="Fichier à nettoyer",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="cln_file_uploader",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab9"],
+        )
+        if cln_file:
+            st.success(f"✅ {cln_file.name} ({cln_file.size / 1024:.1f} Ko)")
+
+    with col_cln2:
+        st.subheader("✅ Fichier Officiel (CNAS)")
+        st.caption("Fichier de référence — colonnes NUMSS, NOM, PRENOM, DATNAIS, DATENT")
+        cln_official = st.file_uploader(
+            label="Fichier officiel",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="cln_official_uploader",
+            label_visibility="collapsed",
+            disabled=st.session_state["processing_tab9"],
+        )
+        if cln_official:
+            st.success(f"✅ {cln_official.name} ({cln_official.size / 1024:.1f} Ko)")
+
+    st.divider()
+
+    cln_ready = cln_file is not None and cln_official is not None
+    if not cln_ready:
+        missing = []
+        if cln_file is None:
+            missing.append("Fichier à nettoyer")
+        if cln_official is None:
+            missing.append("Fichier officiel")
+        st.info(f"ℹ️ Veuillez téléverser : {', '.join(missing)}.")
+
+    cln_clicked = st.button(
+        "▶  Nettoyer et compléter",
+        type="primary",
+        disabled=not cln_ready or st.session_state["processing_tab9"],
+        use_container_width=False,
+        key="btn_tab9",
+    )
+
+    # Pass 1: button click → set flag + rerun so widgets render as disabled
+    if cln_clicked and cln_ready:
+        st.session_state["cln_result_bytes"] = None
+        st.session_state["cln_error_message"] = None
+        st.session_state["cln_processing_info"] = None
+        st.session_state["processing_tab9"] = True
+        st.rerun()
+
+    # Pass 2: flag is True → run pipeline
+    if st.session_state["processing_tab9"] and cln_file is not None and cln_official is not None:
+        try:
+            with st.spinner("⏳ Nettoyage et remplissage en cours…"):
+                cln_bytes, cln_stats = clean_and_fill(
+                    cln_file, cln_file.name, cln_official, cln_official.name
+                )
+            st.session_state["cln_result_bytes"] = cln_bytes
+            st.session_state["cln_processing_info"] = {
+                "stats": cln_stats,
+                "source_name": cln_file.name,
+            }
+        except ValueError as e:
+            st.session_state["cln_error_message"] = str(e)
+        finally:
+            st.session_state["processing_tab9"] = False
+
+    if st.session_state["cln_error_message"]:
+        st.divider()
+        st.error("❌ Erreur de traitement")
+        st.code(st.session_state["cln_error_message"], language=None)
+        st.caption("Vérifiez que les deux fichiers contiennent la colonne NUMSS.")
+
+    if st.session_state["cln_result_bytes"]:
+        st.divider()
+        info = st.session_state["cln_processing_info"]
+        stats = info["stats"]
+
+        st.success(
+            f"✅ Terminé — {stats['rows_in']} ligne(s) → {stats['rows_out']} "
+            f"({stats['rows_merged']} doublon(s) NUMSS fusionné(s)). "
+            f"L'officiel fait foi : {stats['datnais_set'] + stats['datent_set']} date(s) corrigée(s)."
+        )
+
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Doublons fusionnés", stats["rows_merged"])
+        with col_b:
+            st.metric("NUMSS complétés", stats["numss_filled"])
+        with col_c:
+            st.metric("Lignes finales", stats["rows_out"])
+
+        col_d, col_e, col_f = st.columns(3)
+        with col_d:
+            st.metric("DATNAIS (officiel)", stats["datnais_set"])
+        with col_e:
+            st.metric("DATENT (officiel)", stats["datent_set"])
+        with col_f:
+            st.metric("DATSOR vidées + dates erronées", stats["datsor_cleared"] + stats["junk_removed"])
+
+        cln_output_name = os.path.splitext(info["source_name"])[0] + "_nettoye.xlsx"
+        st.download_button(
+            label=f"⬇  Télécharger le fichier nettoyé ({cln_output_name})",
+            data=st.session_state["cln_result_bytes"],
+            file_name=cln_output_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+            key="download_tab9",
+            on_click=increment_downloads,
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Footer
